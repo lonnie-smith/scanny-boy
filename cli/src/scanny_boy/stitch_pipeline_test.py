@@ -3664,3 +3664,644 @@ def test_real_samples_composed_then_stitched_match_a_plain_stitch(
         plain_roll, plain_work, _PLAIN_RUN
     )
     assert not (work / ".composed").exists()
+
+
+# --- PS-3: parallel commits (docs/PARALLEL_STITCH_PLAN.md §3.3-3.5) ---
+
+
+def _publish_lock_for(roll: Path):
+    from scanny_boy.roll_lock import exclusive_publish_lock
+
+    return lambda: exclusive_publish_lock(roll)
+
+
+def _commit(work, roll, run_id, emit, **kwargs):
+    """A parallel commit: deferred refresh, and a real publish lock."""
+    defaults = {
+        "overwrite": False,
+        "allow_partial": False,
+        "jobs": 1,
+        "defer_roll_refresh": True,
+        "publish_lock": _publish_lock_for(roll),
+    }
+    defaults.update(kwargs)
+    return run_stitch(
+        work,
+        roll,
+        run_id=run_id,
+        cancel=CancellationToken(),
+        emit=emit,
+        **defaults,
+    )
+
+
+def _single_negative_works(base: Path, tmp_path: Path, label: str) -> list[Path]:
+    """One work folder per group of `base`, in group order: what the capture
+    queue stitches, one negative per commit."""
+    import shutil
+
+    manifest = load_manifest(base)
+    works = []
+    for group in manifest.groups:
+        work = tmp_path / f"{label}-{group.group_id}"
+        shutil.copytree(base, work)
+        write_manifest(
+            work,
+            dataclasses.replace(
+                manifest,
+                groups=[group],
+                source_order=list(group.members),
+                sources=[s for s in manifest.sources if s.filename in group.members],
+            ),
+        )
+        works.append(work)
+    return works
+
+
+def _masked_dump(roll: Path, works: list[Path], run_ids: list[str]) -> str:
+    """`_roll_dump` for a roll built by several runs from several work
+    folders: each work folder and run id is masked by its position."""
+    import json
+
+    manifest = load_roll_manifest(roll).to_dict()
+    roll_id = manifest["roll_id"]
+    for key in ("roll_id", "roll_name", "created_at", "updated_at"):
+        manifest.pop(key, None)
+    text = json.dumps(manifest, sort_keys=True, default=str)
+    text = text.replace(roll_id, "<roll-id>").replace(str(roll), "<roll>")
+    for i, work in enumerate(works):
+        text = text.replace(str(work), f"<work-{i}>")
+    for i, run_id in enumerate(run_ids):
+        text = text.replace(run_id, f"<run-{i}>")
+    return text
+
+
+def _edit_ops(roll: Path) -> list[list[tuple[str, str]]]:
+    """Each negative's ops log (op and params, in order), in roll order."""
+    import json
+
+    return [
+        [
+            (edit["op"], json.dumps(edit["params"], sort_keys=True))
+            for edit in repo.edits_for(roll, negative.negative_id)
+        ]
+        for negative in load_roll_manifest(roll).negatives
+    ]
+
+
+def _engage_the_clamp(monkeypatch) -> None:
+    from scanny_boy import normalization
+
+    monkeypatch.setattr(normalization, "CLAMP_MIN_SAMPLES", 1)
+    monkeypatch.setattr(normalization, "CLAMP_MIN_WINDOW", 0.0)
+    monkeypatch.setattr(normalization, "CLAMP_K_MAD", 0.0)
+
+
+_GAINS = [(0.9, 0.8, 0.7), (0.8, 0.85, 0.9), (0.95, 0.9, 0.85)]
+_SERIAL_RUNS = ["ser000", "ser001", "ser002"]
+_PARALLEL_RUNS = ["par000", "par001", "par002"]
+
+
+def _forbid_recompute(monkeypatch) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the artifact should have stood in for this")
+
+    monkeypatch.setattr(stitch_pipeline, "_solve_negative", forbidden)
+    monkeypatch.setattr(stitch_pipeline, "compose_negative", forbidden)
+
+
+def test_parallel_commits_publish_exactly_what_serial_stitches_do(
+    tmp_path, monkeypatch
+):
+    """The ordering proof. Three negatives whose normalization differs and
+    whose clamp engages. Path A stitches them one after another in
+    exclusive mode. Path B composes all three first (with no knowledge of
+    one another), then commits them in order with a real publish lock. Every
+    record, TIFF byte, name and edit must be equal."""
+    _engage_the_clamp(monkeypatch)
+    base = make_work_dir(tmp_path, negatives=3, frame_gains=_GAINS)
+    _freeze_time(monkeypatch)
+    works_a = _single_negative_works(base, tmp_path, "serial")
+    works_b = _single_negative_works(base, tmp_path, "parallel")
+
+    roll_a = make_roll_dir(tmp_path, "serial")
+    for work, run_id in zip(works_a, _SERIAL_RUNS, strict=True):
+        outcome = run_stitch_with_defaults(
+            work, roll_a, run_id=run_id, defer_roll_refresh=True
+        )
+        assert outcome.status == "complete"
+    clamped = [n.normalization["clamped"] for n in load_roll_manifest(roll_a).negatives]
+    assert any(clamped), "the clamp never engaged, so this test proves nothing"
+
+    roll_b = make_roll_dir(tmp_path, "parallel")
+    for k, work in enumerate(works_b):
+        assert _run_compose(work, roll_b, run_id=f"cmp00{k}").status == "complete"
+    _forbid_recompute(monkeypatch)
+    for work, run_id in zip(works_b, _PARALLEL_RUNS, strict=True):
+        events: list = []
+        assert _commit(work, roll_b, run_id, events.append).status == "complete"
+        assert _stale_warnings(events) == []
+
+    assert _published_hashes(roll_b) == _published_hashes(roll_a)
+    assert _masked_dump(roll_b, works_b, _PARALLEL_RUNS) == _masked_dump(
+        roll_a, works_a, _SERIAL_RUNS
+    )
+    assert _edit_ops(roll_b) == _edit_ops(roll_a)
+    assert all(not (work / ".composed").exists() for work in works_b)
+
+
+def test_a_parallel_commit_without_artifacts_composes_ahead_and_matches_serial(
+    tmp_path, monkeypatch
+):
+    """No compose ahead of time: the commit composes to disk itself before
+    taking the lock, and the result is still the serial one. The event stream
+    keeps its shape, and the progress counter reaches its total once."""
+    _engage_the_clamp(monkeypatch)
+    base = make_work_dir(tmp_path, negatives=3, frame_gains=_GAINS)
+    _freeze_time(monkeypatch)
+    works_a = _single_negative_works(base, tmp_path, "serial")
+    works_b = _single_negative_works(base, tmp_path, "parallel")
+    roll_a = make_roll_dir(tmp_path, "serial")
+    roll_b = make_roll_dir(tmp_path, "parallel")
+
+    serial_events: list[list] = []
+    for work, run_id in zip(works_a, _SERIAL_RUNS, strict=True):
+        events: list = []
+        run_stitch_with_defaults(
+            work, roll_a, events=events, run_id=run_id, defer_roll_refresh=True
+        )
+        serial_events.append(events)
+    parallel_events: list[list] = []
+    for work, run_id in zip(works_b, _PARALLEL_RUNS, strict=True):
+        events = []
+        assert _commit(work, roll_b, run_id, events.append).status == "complete"
+        parallel_events.append(events)
+
+    assert _published_hashes(roll_b) == _published_hashes(roll_a)
+    assert _masked_dump(roll_b, works_b, _PARALLEL_RUNS) == _masked_dump(
+        roll_a, works_a, _SERIAL_RUNS
+    )
+    assert _edit_ops(roll_b) == _edit_ops(roll_a)
+    for serial, parallel in zip(serial_events, parallel_events, strict=True):
+        assert [type(e) for e in parallel] == [type(e) for e in serial]
+        progress = [e for e in parallel if isinstance(e, Progress)]
+        assert progress[-1].completed == progress[-1].total
+        assert [e.completed for e in progress] == sorted(e.completed for e in progress)
+        assert len({e.completed for e in progress}) == len(progress)
+    assert all(not (work / ".composed").exists() for work in works_b)
+
+
+def test_a_commit_can_run_during_the_previous_commits_tail(tmp_path, monkeypatch):
+    """Commit k+1 starts the moment commit k announces `negative_published`,
+    while k still has its tail and its end-of-run write to do (here, inside
+    the callback, in the same thread: the lock is already released). Both
+    runs' writes survive, recovery cleanup deletes nothing of k's, and the
+    result equals three serial stitches."""
+    _engage_the_clamp(monkeypatch)
+    base = make_work_dir(tmp_path, negatives=3, frame_gains=_GAINS)
+    _freeze_time(monkeypatch)
+    works_a = _single_negative_works(base, tmp_path, "serial")
+    works_b = _single_negative_works(base, tmp_path, "nest")
+    roll_a = make_roll_dir(tmp_path, "serial")
+    for work, run_id in zip(works_a, _SERIAL_RUNS, strict=True):
+        run_stitch_with_defaults(work, roll_a, run_id=run_id, defer_roll_refresh=True)
+
+    roll_b = make_roll_dir(tmp_path, "nest")
+    for k, work in enumerate(works_b):
+        assert _run_compose(work, roll_b, run_id=f"cmp00{k}").status == "complete"
+    real_cleanup = stitch_pipeline.apply_recovery_cleanup
+    cleaned: list = []
+
+    def spy_cleanup(output_dir, plan):
+        cleaned.append((plan.stale_outputs, plan.stale_staging_dirs))
+        return real_cleanup(output_dir, plan)
+
+    monkeypatch.setattr(stitch_pipeline, "apply_recovery_cleanup", spy_cleanup)
+    events_by_commit: list[list] = [[] for _ in works_b]
+    seen_in_callback: list[list[str]] = []
+
+    def commit(k: int):
+        def emit(event):
+            events_by_commit[k].append(event)
+            if isinstance(event, stitch_pipeline.NegativePublished) and k + 1 < 3:
+                # Commit k is between its publish and its tail: its edits,
+                # end-of-run write and previews are still to come.
+                seen_in_callback.append(sorted(p.name for p in roll_b.iterdir()))
+                commit(k + 1)
+
+        return _commit(works_b[k], roll_b, _PARALLEL_RUNS[k], emit)
+
+    assert commit(0).status == "complete"
+
+    assert cleaned == [([], [])] * 3
+    assert len(seen_in_callback) == 2
+    for listing in seen_in_callback:
+        assert not [name for name in listing if name.endswith(".scanny-staging")]
+    for events in events_by_commit:
+        kinds = [type(e) for e in events]
+        assert kinds.index(stitch_pipeline.NegativePublished) < kinds.index(
+            stitch_pipeline.NegativeDone
+        )
+    assert [r.status for r in load_roll_manifest(roll_b).runs] == ["complete"] * 3
+    assert _published_hashes(roll_b) == _published_hashes(roll_a)
+    assert _masked_dump(roll_b, works_b, _PARALLEL_RUNS) == _masked_dump(
+        roll_a, works_a, _SERIAL_RUNS
+    )
+    assert _edit_ops(roll_b) == _edit_ops(roll_a)
+
+
+@pytest.mark.parametrize("mode", ["exclusive", "parallel"])
+def test_the_staging_directory_is_gone_when_negative_published_is_emitted(
+    work_dir, tmp_path, mode
+):
+    roll = make_roll_dir(tmp_path, "r")
+    staging_seen: list[list[Path]] = []
+
+    def emit(event):
+        if isinstance(event, stitch_pipeline.NegativePublished):
+            staging_seen.append(list(roll.glob("*.scanny-staging")))
+            assert (roll / event.output).is_file()
+
+    if mode == "exclusive":
+        outcome = run_stitch(
+            work_dir,
+            roll,
+            run_id="stitch-run",
+            overwrite=False,
+            allow_partial=False,
+            jobs=1,
+            cancel=CancellationToken(),
+            emit=emit,
+        )
+    else:
+        outcome = _commit(work_dir, roll, "stitch-run", emit)
+
+    assert outcome.status == "complete"
+    assert staging_seen == [[]]
+
+
+def test_exclusive_mode_event_order_gains_only_negative_published(
+    work_dir, tmp_path, monkeypatch
+):
+    """Exclusive mode: the same stream as before, with `negative_published`
+    right after the negative's publish and before its tail's `negative_done`."""
+    _freeze_time(monkeypatch)
+    roll = make_roll_dir(tmp_path, "r")
+    events: list = []
+    run_stitch_with_defaults(work_dir, roll, events=events)
+
+    kinds = [type(e).__name__ for e in events if not isinstance(e, Progress)]
+    published = kinds.index("NegativePublished")
+    assert kinds[published + 1] == "NegativeDone"
+    assert kinds.count("NegativePublished") == kinds.count("NegativeDone") == 1
+    without = [k for k in kinds if k != "NegativePublished"]
+    assert without[-1] == "NegativeDone"
+    assert [e for e in events if isinstance(e, stitch_pipeline.NegativePublished)] == [
+        stitch_pipeline.NegativePublished(
+            run_id="stitch-run",
+            negative_id=load_roll_manifest(roll).negatives[0].negative_id,
+            output="IMG_00.tif",
+        )
+    ]
+
+
+def test_a_two_group_commit_announces_after_the_release_and_defers_only_the_last_tail(
+    tmp_path, monkeypatch
+):
+    """The first group's tail runs inside the lock (so it holds no canvas
+    while the second composites); the last group's runs after the release.
+    `negative_published` is emitted for both once the lock is free."""
+    from scanny_boy.roll_lock import RollBusyError, exclusive_publish_lock
+
+    base = make_work_dir(tmp_path, negatives=2, frame_gains=_GAINS)
+    roll = make_roll_dir(tmp_path, "r")
+    held: list[tuple[str, bool]] = []
+    events: list = []
+
+    def lock_is_free() -> bool:
+        try:
+            with exclusive_publish_lock(roll):
+                return True
+        except RollBusyError:
+            return False
+
+    def emit(event):
+        events.append(event)
+        if isinstance(event, (stitch_pipeline.NegativePublished, NegativeDone)):
+            held.append((type(event).__name__, not lock_is_free()))
+
+    assert _commit(base, roll, "stitch-run", emit).status == "complete"
+
+    # Group 1's tail ran under the lock; both announcements and group 2's
+    # tail came after the release.
+    assert held == [
+        ("NegativeDone", True),
+        ("NegativePublished", False),
+        ("NegativePublished", False),
+        ("NegativeDone", False),
+    ]
+    order = [
+        (type(e).__name__, e.negative_id)
+        for e in events
+        if isinstance(e, (stitch_pipeline.NegativePublished, NegativeDone))
+    ]
+    first, second = (n.negative_id for n in load_roll_manifest(roll).negatives)
+    assert order == [
+        ("NegativeDone", first),
+        ("NegativePublished", first),
+        ("NegativePublished", second),
+        ("NegativeDone", second),
+    ]
+
+
+def test_a_parallel_commit_fails_roll_busy_before_writing_the_roll(
+    work_dir, tmp_path, monkeypatch
+):
+    from scanny_boy.library.db import library_db_path
+    from scanny_boy.roll_lock import RollBusyError, exclusive_publish_lock
+
+    roll = make_roll_dir(tmp_path, "r")
+    db_before = library_db_path().read_bytes()
+    manifest_before = load_roll_manifest(roll).to_dict()
+    files_before = sorted(p.name for p in roll.iterdir())
+    events: list = []
+
+    with exclusive_publish_lock(roll), pytest.raises(RollBusyError) as excinfo:
+        _commit(work_dir, roll, "stitch-run", events.append)
+
+    assert excinfo.value.code is Code.ROLL_BUSY
+    # The roll-independent work had already run (and is kept for the retry);
+    # nothing reached the roll.
+    assert [e for e in events if isinstance(e, Progress)]
+    assert library_db_path().read_bytes() == db_before
+    assert load_roll_manifest(roll).to_dict() == manifest_before
+    assert sorted(p.name for p in roll.iterdir()) == files_before
+    assert _artifact(work_dir).is_dir()
+
+    # The retry reuses the artifact.
+    _forbid_recompute(monkeypatch)
+    outcome = _commit(work_dir, roll, "stitch-run", events.append)
+    assert outcome.status == "complete"
+
+
+def test_a_parallel_commit_requires_a_deferred_refresh_and_no_named_negatives(
+    work_dir, tmp_path
+):
+    roll = make_roll_dir(tmp_path, "r")
+    with pytest.raises(ValueError):
+        _commit(work_dir, roll, "r1", lambda e: None, defer_roll_refresh=False)
+    with pytest.raises(ValueError):
+        _commit(work_dir, roll, "r2", lambda e: None, negatives=["x"])
+    assert load_roll_manifest(roll).runs == []
+
+
+def test_a_parallel_commit_refuses_a_mismatched_roll_before_composing(
+    work_dir, tmp_path, monkeypatch
+):
+    roll = make_roll_dir(tmp_path, "r")
+    run_stitch_with_defaults(work_dir, roll, run_id="first0", defer_roll_refresh=True)
+
+    def tamper(fresh):
+        fresh.icc_profile = {**fresh.icc_profile, "sha256": "e" * 64}
+
+    mutate_roll_manifest(roll, tamper)
+    import shutil
+
+    other = tmp_path / "other-work"
+    shutil.copytree(work_dir, other)
+    _forbid_recompute(monkeypatch)
+
+    with pytest.raises(StitchError) as excinfo:
+        _commit(other, roll, "second", lambda e: None)
+
+    assert excinfo.value.code is Code.ROLL_INVARIANT_MISMATCH
+    assert not (other / ".composed").exists()
+
+
+def test_a_cancelled_parallel_commit_records_a_cancelled_run(work_dir, tmp_path):
+    roll = make_roll_dir(tmp_path, "r")
+    token = CancellationToken()
+
+    def emit(event):
+        if isinstance(event, Progress):
+            token.cancel()
+
+    outcome = run_stitch(
+        work_dir,
+        roll,
+        run_id="stitch-run",
+        overwrite=False,
+        allow_partial=False,
+        jobs=1,
+        cancel=token,
+        emit=emit,
+        defer_roll_refresh=True,
+        publish_lock=_publish_lock_for(roll),
+    )
+
+    assert outcome.status == "cancelled"
+    manifest = load_roll_manifest(roll)
+    assert [r.status for r in manifest.runs] == ["cancelled"]
+    assert not list(roll.glob("*.tif"))
+    assert not list(roll.glob("*.scanny-staging"))
+
+
+def test_a_stray_staging_directory_of_an_earlier_run_does_not_stop_a_commit(
+    tmp_path, monkeypatch
+):
+    """A commit killed between its publish transaction and the removal of
+    its staging directory leaves one behind; by the next commit's plan other
+    runs have been appended, and the directory is no longer the last run's."""
+    from scanny_boy.output_folder import staging_dir_path
+
+    base = make_work_dir(tmp_path, negatives=3, frame_gains=_GAINS)
+    works = _single_negative_works(base, tmp_path, "w")
+    roll = make_roll_dir(tmp_path, "r")
+    for work, run_id in zip(works[:2], _PARALLEL_RUNS, strict=False):
+        assert _commit(work, roll, run_id, lambda e: None).status == "complete"
+    first = load_roll_manifest(roll).negatives[0]
+    stray = staging_dir_path(roll, _PARALLEL_RUNS[0], first.negative_id)
+    stray.mkdir()
+    (stray / first.expected_output).write_bytes(b"left over")
+
+    outcome = _commit(works[2], roll, _PARALLEL_RUNS[2], lambda e: None)
+
+    assert outcome.status == "complete"
+    assert not stray.exists()
+    manifest = load_roll_manifest(roll)
+    assert [n.status for n in manifest.negatives] == ["completed"] * 3
+    assert (roll / first.expected_output).stat().st_size > 100
+
+
+# --- PS-3: verified first-publish locks (§3.5) ---
+
+
+def _change_inside_the_publish_section(monkeypatch, roll: Path, change) -> list:
+    """Run `change(fresh)` as a roll mutation right before the publish
+    transaction, i.e. after the roll was read for planning and after the
+    TIFF was moved into place."""
+    done: list[str] = []
+    real = stitch_pipeline._maybe_reapply_metadata
+
+    def hook(*args, **kwargs):
+        if not done:
+            mutate_roll_manifest(roll, change)
+            done.append("changed")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline, "_maybe_reapply_metadata", hook)
+    return done
+
+
+def test_a_film_base_that_changes_before_the_publish_fails_the_negative(
+    work_dir, tmp_path, monkeypatch
+):
+    roll = make_roll_dir(tmp_path, "r")
+    events: list = []
+
+    def change(fresh):
+        fresh.film_base["source_sha256"] = "9" * 64
+
+    done = _change_inside_the_publish_section(monkeypatch, roll, change)
+
+    outcome = _commit(work_dir, roll, "stitch-run", events.append)
+
+    assert done == ["changed"]
+    assert outcome.status == "partial"
+    assert outcome.published == []
+    failures = [e for e in events if isinstance(e, NegativeFailed)]
+    assert [e.code for e in failures] == [Code.FILM_BASE_CHANGED]
+    assert not [e for e in events if isinstance(e, stitch_pipeline.NegativePublished)]
+    assert not [e for e in events if isinstance(e, NegativeDone)]
+    manifest = load_roll_manifest(roll)
+    [negative] = manifest.negatives
+    assert negative.status == "failed"
+    assert negative.error_code == "FILM_BASE_CHANGED"
+    assert negative.output is None
+    # Only the test's own change to the roll, and nothing locked.
+    assert manifest.film_base["source_sha256"] == "9" * 64
+    assert manifest.film_base["locked_at"] is None
+    assert [r.status for r in manifest.runs] == ["partial"]
+    assert not list(roll.glob("*.tif"))
+    assert not list(roll.glob("*.scanny-staging"))
+
+
+def test_a_flat_field_that_changes_before_the_publish_fails_the_negative(
+    work_dir, tmp_path, monkeypatch
+):
+    roll = make_roll_dir(tmp_path, "r")
+    flat = {
+        "gain_map_sha256": "a" * 64,
+        "gain_map_path": "/nowhere/gain.npy",
+        "locked_at": None,
+    }
+    mutate_roll_manifest(roll, lambda fresh: setattr(fresh, "flat_field", dict(flat)))
+
+    def change(fresh):
+        fresh.flat_field["gain_map_sha256"] = "b" * 64
+
+    _change_inside_the_publish_section(monkeypatch, roll, change)
+
+    outcome = _commit(work_dir, roll, "stitch-run", lambda e: None)
+
+    assert outcome.status == "partial"
+    manifest = load_roll_manifest(roll)
+    assert manifest.negatives[0].error_code == "FILM_BASE_CHANGED"
+    assert manifest.flat_field["locked_at"] is None
+    assert manifest.film_base["locked_at"] is None
+
+
+def test_the_first_publish_locks_only_locked_at_and_keeps_other_writers_changes(
+    work_dir, tmp_path, monkeypatch
+):
+    """The lock is a check-and-set on the fresh roll: a change to anything
+    else in the block (here the source name) survives, and both blocks get a
+    `locked_at`. Copying the working copy's block would have reverted it."""
+    roll = make_roll_dir(tmp_path, "r")
+    flat = {"gain_map_sha256": "a" * 64, "gain_map_path": "/x", "locked_at": None}
+    mutate_roll_manifest(roll, lambda fresh: setattr(fresh, "flat_field", dict(flat)))
+
+    def change(fresh):
+        fresh.film_base["source_name"] = "renamed.NEF"
+        fresh.flat_field["gain_map_path"] = "/moved"
+
+    _change_inside_the_publish_section(monkeypatch, roll, change)
+
+    outcome = _commit(work_dir, roll, "stitch-run", lambda e: None)
+
+    assert outcome.status == "complete"
+    manifest = load_roll_manifest(roll)
+    assert manifest.film_base["source_name"] == "renamed.NEF"
+    assert manifest.film_base["locked_at"] is not None
+    assert manifest.flat_field["gain_map_path"] == "/moved"
+    assert manifest.flat_field["locked_at"] is not None
+
+
+def test_a_second_publish_keeps_the_first_locked_at(tmp_path, monkeypatch):
+    base = make_work_dir(tmp_path, negatives=2, frame_gains=_GAINS)
+    works = _single_negative_works(base, tmp_path, "w")
+    roll = make_roll_dir(tmp_path, "r")
+    _commit(works[0], roll, "ser000", lambda e: None)
+    first = load_roll_manifest(roll).film_base["locked_at"]
+    assert first is not None
+
+    _commit(works[1], roll, "ser001", lambda e: None)
+
+    assert load_roll_manifest(roll).film_base["locked_at"] == first
+
+
+@requires_real_samples
+@pytest.mark.slow
+def test_real_samples_parallel_commits_match_serial_stitches(tmp_path, monkeypatch):
+    """The ordering proof on two real 3-frame negatives, one work folder
+    each: serial exclusive stitches in order, against composes made up front
+    and commits made in order under a real publish lock."""
+    from scanny_boy.pipeline import run_convert
+    from scanny_boy.sample_nef_support import stage_samples
+
+    works_by_label: dict[str, list[Path]] = {"serial": [], "parallel": []}
+    for index, names in enumerate((NEGATIVE_1, NEGATIVE_2)):
+        scratch = tmp_path / f"scratch-{index}"
+        scratch.mkdir()
+        input_dir = stage_samples(scratch, names)
+        converted = scratch / "converted"
+        converted.mkdir()
+        run_convert(
+            input_dir,
+            names,
+            converted,
+            3,
+            run_id="convert-run",
+            jobs=1,
+            cancel=CancellationToken(),
+            emit=lambda event: None,
+        )
+        for label, works in works_by_label.items():
+            works.append(_copy_work(converted, tmp_path / f"{label}-work-{index}"))
+    _freeze_time(monkeypatch)
+    serial_runs, parallel_runs = _SERIAL_RUNS[:2], _PARALLEL_RUNS[:2]
+
+    roll_a = make_roll_dir(tmp_path, "serial")
+    for work, run_id in zip(works_by_label["serial"], serial_runs, strict=True):
+        assert (
+            run_stitch_with_defaults(
+                work, roll_a, run_id=run_id, defer_roll_refresh=True
+            ).status
+            == "complete"
+        )
+
+    roll_b = make_roll_dir(tmp_path, "parallel")
+    for k, work in enumerate(works_by_label["parallel"]):
+        assert (
+            _run_compose(work, roll_b, run_id=f"cmp00{k}", jobs=1).status == "complete"
+        )
+    for work, run_id in zip(works_by_label["parallel"], parallel_runs, strict=True):
+        events: list = []
+        assert _commit(work, roll_b, run_id, events.append).status == "complete"
+        assert _stale_warnings(events) == []
+
+    assert _published_hashes(roll_b) == _published_hashes(roll_a)
+    assert _masked_dump(roll_b, works_by_label["parallel"], parallel_runs) == (
+        _masked_dump(roll_a, works_by_label["serial"], serial_runs)
+    )
+    assert _edit_ops(roll_b) == _edit_ops(roll_a)

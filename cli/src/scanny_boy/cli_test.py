@@ -4205,3 +4205,196 @@ def test_stitch_compose_only_cannot_overlap_an_exclusive_writer(
         assert main(args) == 0
     capsys.readouterr()
     assert (work_dir / ".composed" / "negative-01" / "log.npy").is_file()
+
+
+# --- PS-3: the publish lock (docs/PARALLEL_STITCH_PLAN.md §3.4) ---
+
+
+def _deferred_stitch(work, roll) -> list[str]:
+    return ["stitch", "--work", str(work), "--roll", str(roll), "--defer-roll-refresh"]
+
+
+def _lock_busy(lock, roll) -> bool:
+    from scanny_boy.roll_lock import RollBusyError
+
+    try:
+        with lock(roll):
+            return False
+    except RollBusyError:
+        return True
+
+
+def test_a_deferred_stitch_fails_roll_busy_midrun_without_writing_the_roll(
+    work_dir, capsys, tmp_path
+):
+    """The publish lock is taken after `started` and the compose's progress
+    but before the roll's first write, so a busy lock is a clean `ROLL_BUSY`
+    failure that recorded nothing."""
+    from scanny_boy.library.db import library_db_path
+    from scanny_boy.roll_lock import exclusive_publish_lock
+
+    roll = make_roll_dir(tmp_path)
+    db_before = library_db_path().read_bytes()
+    manifest_before = load_roll_manifest(roll).to_dict()
+
+    with exclusive_publish_lock(roll):
+        status = main(_deferred_stitch(work_dir, roll))
+
+    assert status == 1
+    events, _err = _stdout_events(capsys)
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "started"
+    assert "progress" in kinds
+    assert kinds[-2:] == ["error", "finished"]
+    assert events[-2]["code"] == "ROLL_BUSY"
+    assert events[-1]["status"] == "failed" and events[-1]["exit_status"] == 1
+    assert {"negative_done", "negative_published", "negative_failed"}.isdisjoint(kinds)
+    assert library_db_path().read_bytes() == db_before
+    assert load_roll_manifest(roll).to_dict() == manifest_before
+    assert not list(roll.glob("*.tif"))
+    # The compose is kept, so the retry only has to publish.
+    assert (work_dir / ".composed" / "negative-01" / "log.npy").is_file()
+
+    assert main(_deferred_stitch(work_dir, roll)) == 0
+    events, _err = _stdout_events(capsys)
+    kinds = [e["event"] for e in events]
+    assert kinds.index("negative_published") < kinds.index("negative_done")
+    published = events[kinds.index("negative_published")]
+    assert published["negative_id"] and published["output"].endswith(".tif")
+
+
+def test_a_deferred_stitch_holds_the_locks_it_documents(
+    work_dir, capsys, tmp_path, monkeypatch
+):
+    """Probed from inside the run with real flock contention: the roll lock is
+    held shared for the whole command (an exclusive writer or `roll refresh`
+    fails, another shared holder does not), the publish lock exclusively
+    during the publish section (an export fails) and not at all in the tail."""
+    from scanny_boy import stitch_pipeline
+    from scanny_boy.roll_lock import (
+        exclusive_publish_lock,
+        exclusive_roll_lock,
+        shared_publish_lock,
+        shared_roll_lock,
+    )
+
+    roll = make_roll_dir(tmp_path)
+    probes: dict[str, object] = {}
+
+    def probe(where: str) -> None:
+        probes[where] = {
+            "exclusive_roll_busy": _lock_busy(exclusive_roll_lock, roll),
+            "shared_roll_busy": _lock_busy(shared_roll_lock, roll),
+            "exclusive_publish_busy": _lock_busy(exclusive_publish_lock, roll),
+            "shared_publish_busy": _lock_busy(shared_publish_lock, roll),
+        }
+
+    real_publish = stitch_pipeline._publish_negative
+
+    def publish_probe(**kwargs):
+        probe("publish")
+        capsys.readouterr()
+        probes["refresh_status"] = main(["roll", "refresh", "--roll", str(roll)])
+        probes["export_status"] = main(
+            ["export", "--roll", str(roll), "--output", str(tmp_path / "export")]
+        )
+        probes["nested"] = capsys.readouterr().out
+        return real_publish(**kwargs)
+
+    real_finish = stitch_pipeline._finish_published
+
+    def finish_probe(*args, **kwargs):
+        probe("tail")
+        return real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline, "_publish_negative", publish_probe)
+    monkeypatch.setattr(stitch_pipeline, "_finish_published", finish_probe)
+
+    assert main(_deferred_stitch(work_dir, roll)) == 0
+
+    assert probes["publish"] == {
+        "exclusive_roll_busy": True,
+        "shared_roll_busy": False,
+        "exclusive_publish_busy": True,
+        "shared_publish_busy": True,
+    }
+    assert probes["tail"] == {
+        "exclusive_roll_busy": True,
+        "shared_roll_busy": False,
+        "exclusive_publish_busy": False,
+        "shared_publish_busy": False,
+    }
+    # An exclusive roll writer, and an export, are refused mid-publish.
+    assert probes["refresh_status"] == 1
+    assert probes["export_status"] == 1
+    assert str(probes["nested"]).count('"code":"ROLL_BUSY"') == 2
+    # Nothing is held once the command ends.
+    assert not _lock_busy(exclusive_roll_lock, roll)
+    assert not _lock_busy(exclusive_publish_lock, roll)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [[], ["--negatives", "stitch-negative-01"]],
+    ids=["not-deferred", "negatives"],
+)
+def test_other_stitches_keep_the_exclusive_roll_lock(
+    work_dir, capsys, tmp_path, monkeypatch, extra
+):
+    from scanny_boy import stitch_pipeline
+    from scanny_boy.roll_lock import (
+        exclusive_publish_lock,
+        shared_roll_lock,
+    )
+
+    roll = make_roll_dir(tmp_path)
+    seen: dict[str, object] = {}
+    real = stitch_pipeline.run_stitch
+
+    def spy(*args, **kwargs):
+        seen["shared_roll_busy"] = _lock_busy(shared_roll_lock, roll)
+        seen["publish_lock"] = kwargs.get("publish_lock")
+        seen["publish_free"] = not _lock_busy(exclusive_publish_lock, roll)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stitch_pipeline, "run_stitch", spy)
+    args = ["stitch", "--work", str(work_dir), "--roll", str(roll), *extra]
+    if "--negatives" in extra:
+        args.append("--defer-roll-refresh")
+    main(args)
+
+    assert seen == {
+        "shared_roll_busy": True,
+        "publish_lock": None,
+        "publish_free": True,
+    }
+
+
+def test_export_holds_the_publish_lock_shared_for_its_run(
+    capsys, tmp_path, monkeypatch
+):
+    """A commit's publish section cannot start under a running export, and
+    an export cannot start under a publish section."""
+    from scanny_boy import exporter
+    from scanny_boy.roll_lock import exclusive_publish_lock
+
+    roll = make_roll_dir(tmp_path)
+    output = tmp_path / "export"
+
+    with exclusive_publish_lock(roll):
+        assert main(["export", "--roll", str(roll), "--output", str(output)]) == 1
+    events, _err = _stdout_events(capsys)
+    assert [e["event"] for e in events] == ["started", "error", "finished"]
+    assert events[1]["code"] == "ROLL_BUSY"
+
+    seen: dict[str, bool] = {}
+    real = exporter.run_export
+
+    def spy(*args, **kwargs):
+        seen["publish_busy"] = _lock_busy(exclusive_publish_lock, roll)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(exporter, "run_export", spy)
+    main(["export", "--roll", str(roll), "--output", str(output)])
+    assert seen == {"publish_busy": True}
+    assert not _lock_busy(exclusive_publish_lock, roll)

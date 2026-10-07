@@ -217,12 +217,12 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
                       [--negatives ID ... | --compose-only] [--rig ID]
-                      [--no-auto-rotate] [--no-auto-crop]
+                      [--no-auto-rotate] [--no-auto-crop] [--defer-roll-refresh]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
                       [--per-negative N | --grid AxD]
                       [--jobs N] [--skip-sources FILE ...] [--work DIR] [--rig ID]
-                      [--no-auto-rotate] [--no-auto-crop]
+                      [--no-auto-rotate] [--no-auto-crop] [--defer-roll-refresh]
 
 scanny-boy apply-metadata --roll DIR
 
@@ -347,6 +347,52 @@ artifact emits a `COMPOSE_ARTIFACT_STALE` warning and the stitch recomputes
 that group in full: an artifact only ever saves time, never changes a
 result. A stitch removes a group's artifact once the group is published or
 its failure recorded.
+
+**Parallel commits and the locks.** Every command that writes a roll takes
+the roll lock exclusively, so only one runs at a time; `ROLL_BUSY` is the
+immediate, non-blocking refusal. Two forms of `stitch` are the exception.
+A `stitch --defer-roll-refresh` without `--negatives` (a *parallel commit*;
+the capture queue's form) holds the roll lock *shared* for the whole
+command, as `--compose-only` and `export` do, so several of one roll's
+stitches can run at once while every exclusive writer (edits, delete,
+metadata, `roll refresh`, base frame, rename, `run`, a `stitch` without
+`--defer-roll-refresh` or with `--negatives`) is still refused. A second,
+per-roll **publish lock** keeps the commits ordered: a parallel commit takes
+it exclusively for its *publish section* only, and `export` holds it shared
+for its whole run, so an export and a publish section refuse each other and
+an export never reads a TIFF a commit is replacing.
+
+A parallel commit works in three stages. **Before the publish lock** it
+validates the work folder and reads the roll as a snapshot, then makes sure
+every group has a valid compose artifact, composing the missing or stale
+ones to disk itself (the `progress` events of that work come first, and a
+stale artifact emits `COMPOSE_ARTIFACT_STALE`); it writes nothing to the
+roll. **Inside the publish lock** it loads the roll fresh, plans (run id,
+negative ids, output names, first-run seeding, recovery cleanup), records the
+`running` run, and then, group by group, applies the clamp against the
+negatives already published, writes the TIFF, moves it into place, commits
+the record and removes the group's staging directory. **After the lock** it
+runs what does not depend on commit order: scratch detection, the deband
+refit, the rotate and crop seeds, the end-of-run write (which only sets
+`refresh_pending`), previews and `negative_done`. For a work folder with
+several groups, every group's tail except the last runs inside the lock, to
+bound memory. The result — pixels, names, ids, records — is what the same
+stitches would have produced serially in commit order. If the publish lock is
+held when the commit reaches it (another commit's publish section, or an
+export), the command fails `ROLL_BUSY` after its `started` and `progress`
+events; nothing was written to the roll, the compose artifacts are kept, and
+a retry shortly after publishes from them.
+
+`negative_published` is emitted for each negative published, in publish
+order, **after the publish lock is released** and before that negative's
+tail work (`negative_done` follows it); a caller may start the roll's next
+commit on receiving it. A stitch that holds the roll lock exclusively emits it
+too, right after the publish. The first publish locks the film-base and
+flat-field references (`locked_at`) by checking, inside the publish
+transaction, that the roll's `film_base.source_sha256` and `density` and
+`flat_field.gain_map_sha256` are still the ones the negative was normalized
+against; if not, nothing of the publish is committed, the negative is
+recorded as failed with `FILM_BASE_CHANGED`, and no TIFF is left behind.
 
 `--downsample` on `export` reduces each export to the chosen long edge
 (`none` is the default and keeps full resolution). The resize happens
@@ -869,7 +915,7 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `negative_done` | A stitched TIFF has been published for one negative. Carries `negative_id`, `output`, `width`, `height`, `global_rms_px`, and `max_overlap_mad` (the worst post-gain overlap residual). |
 | `negative_failed` | A negative could not be stitched. Carries `negative_id`, `code`, and `message`. |
 | `negative_composed` | `stitch --compose-only` wrote one group's compose artifact. Carries `group_id`, the canvas `width` and `height`, and `artifact_bytes` (the artifact's size on disk). |
-| `negative_published` | A negative's TIFF and record are published. Carries `negative_id` and `output`. Defined with `negative_composed`; a stitch does not emit it yet. |
+| `negative_published` | A negative's TIFF and record are published. Carries `negative_id` and `output`. Emitted by `stitch` once the negative is published and, for a parallel commit, after the publish lock is released (so the caller may start the roll's next commit); `negative_done` follows once the negative's post-publish work is complete. |
 | `roll_created` | A new roll folder was created. Carries `roll_id`, `roll_name`, and `path`. |
 | `roll_list` | The library scan result of `roll list`. Carries `rolls`. |
 | `roll_info` | One roll manifest, loaded and validated. Carries `manifest`. |
@@ -1036,7 +1082,7 @@ staging directories, and reruns the incomplete negative.
 | `NORMALIZE_FILM_EXTENT_EXCESSIVE` | Warning: the withheld border band kept less than half of the analysis region — the frame is unusual, and the user should look at what the metering region is on |
 | `AUTO_CROP_NO_FORMAT` | Warning: the roll's Auto-crop is on but no film format is set; nothing is seeded (once per run) |
 | `COMPOSE_ARTIFACT_STALE` | Warning: a group's compose artifact (`stitch --compose-only`) no longer matches the stitch's inputs, or could not be read; the group is recomputed in full and the result is unaffected |
-| `FILM_BASE_CHANGED` | The roll's film-base or flat-field reference changed between a negative's compose and its publish, so the composed pixels no longer match the roll; defined now, raised by a later stitch |
+| `FILM_BASE_CHANGED` | The roll's film-base or flat-field reference changed between a negative's compose and its publish, so the composed pixels no longer match the roll. Raised inside the publish transaction of a negative's first-publish lock check: the publish is rolled back, the negative is recorded `failed` with this code and no TIFF is left behind |
 | `AUTO_CROP_FAILED` | Warning: the auto-crop detector raised on one negative; the negative was published without a new automatic crop (a refusal is not a failure: it is only recorded in the evidence block) |
 | `TONE_METERING_UNAVAILABLE` | Warning: `--auto-density` was requested but the negative's `normalization` record is missing or incomplete; the op still records with the explicitly-given or neutral value |
 | `FILM_KIND_REQUIRED` | The roll has no `film.kind`; create a new roll with `--film-kind` |

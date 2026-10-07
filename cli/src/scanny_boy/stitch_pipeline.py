@@ -14,6 +14,7 @@ anything large is written or allocated.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import datetime
@@ -24,6 +25,7 @@ import shutil
 import sys
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -80,6 +82,7 @@ from scanny_boy.events import (
     NegativeComposed,
     NegativeDone,
     NegativeFailed,
+    NegativePublished,
     PipelineStep,
     Progress,
     Stage,
@@ -160,6 +163,7 @@ from scanny_boy.roll_manifest import (
     RunRecord,
     allocate_output_name,
     append_run,
+    check_roll_invariants,
     estimate_roll_manifest_size,
     format_negative_id,
     load_roll_manifest,
@@ -223,6 +227,10 @@ class _SolvedNegative:
     # `_composite_and_publish` then runs only `finish_negative`.
     composed: ComposedNegative | None = None
     valid_rect: tuple[int, int, int, int] | None = None
+    # Set when this process composed the artifact itself, ahead of the
+    # publish lock: the compose's progress steps are already spent, so
+    # neither the adoption nor the finish advances them again.
+    compose_progress_spent: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1363,12 +1371,14 @@ def _adopt_artifact(
     progress: _StitchProgress,
     source_index: int,
     on_warning,
+    advance_progress: bool = True,
 ) -> None:
     """Stand a valid compose artifact in for the solve: restore the entry's
     solve products and the record fields the solve assigned, replay the
     warnings the solve emitted, and advance the progress steps the solve
-    would have spent. A failure artifact becomes `entry.failure`, to be
-    recorded exactly like a solve failure.
+    would have spent (unless `advance_progress` is off because this process
+    spent them while composing the artifact itself). A failure artifact
+    becomes `entry.failure`, to be recorded exactly like a solve failure.
 
     Everything that can raise (an unknown code string) is converted before
     anything is applied, so a rejected artifact leaves `entry` untouched."""
@@ -1393,12 +1403,179 @@ def _adopt_artifact(
     entry.ca_maps = products.ca_maps
     entry.valid_rect = products.valid_rect
     entry.composed = loaded.composed
+    if not advance_progress:
+        return
     members = len(entry.group.members)
     for step in (PipelineStep.LOAD, PipelineStep.DETECT):
         for _ in range(members):
             progress.advance(source_index, step)
     progress.advance(source_index, PipelineStep.MATCH)
     progress.advance(source_index, PipelineStep.SOLVE)
+
+
+@dataclasses.dataclass
+class _GroupCompose:
+    """What `_compose_group` did for one group.
+
+    `composed`: the artifact is on disk (`width`, `height`, `artifact_bytes`,
+    `canvas_size`). `failed`: a deterministic failure, written as a failure
+    artifact and carried in `failure`. `infrastructure`: the compose could
+    not finish for a reason unrelated to the negative (`error`); nothing is
+    on disk. `cancelled`: the token fired."""
+
+    status: str
+    failure: tuple[Code, str] | None = None
+    error: BaseException | None = None
+    width: int = 0
+    height: int = 0
+    artifact_bytes: int = 0
+    canvas_size: tuple[int, int] | None = None
+
+
+def _compose_group(
+    work_dir: Path,
+    group: GroupRecord,
+    *,
+    source_index: int,
+    grid: GridSpec,
+    workers: int,
+    profile,
+    base_refs: tuple[float, ...] | None,
+    film_kind: FilmKind,
+    channels: int,
+    fingerprint: dict[str, Any],
+    cancel: CancellationToken,
+    progress: _StitchProgress,
+    on_warning,
+) -> _GroupCompose:
+    """Solve one group, run `compose_negative` and write its artifact (or its
+    failure artifact) to `<work>/.composed/<group_id>/`. Shared by `stitch
+    --compose-only` (`run_compose`) and by a parallel commit that has no
+    usable artifact yet (`_ensure_composed`), so the two cannot drift apart.
+
+    `on_warning` receives each warning the solve emits as it happens; the
+    same warnings are also stored in the artifact for the commit to replay.
+    A run-level disk shortage raises `StitchError(INSUFFICIENT_DISK)`."""
+    record = _tracked_record(group)
+    entry = _SolvedNegative(group=group, record=record, pairs=[])
+    warnings: list[tuple[str, str]] = []
+
+    def on_group_warning(code: Code, message: str) -> None:
+        warnings.append((code.value, message))
+        on_warning(code, message)
+
+    # Deterministic failures (a solve gate, an oversized canvas) become
+    # failure artifacts the commit records; infrastructure failures
+    # (out of memory, a write error) do not, so the commit retries the
+    # group in full instead of inheriting a failure a plain stitch
+    # would not have had.
+    failure: tuple[Code, str] | None = None
+    composed = None
+    try:
+        layout, frame_size, ca_maps = _solve_negative(
+            work_dir,
+            entry,
+            grid=grid,
+            workers=workers,
+            cancel=cancel,
+            progress=progress,
+            source_index=source_index,
+            on_warning=on_group_warning,
+            profile=profile,
+        )
+        entry.layout = layout
+        entry.frame_size = frame_size
+        entry.ca_maps = ca_maps
+        valid_rect = largest_valid_rect(
+            layout, frame_size, rectification=entry.rectification
+        )
+
+        required = math.ceil(
+            compose_artifact.estimate_artifact_bytes(
+                layout.canvas_size,
+                channels,
+                passthrough=max(layout.canvas_size) <= ANALYSIS_PASSTHROUGH_PX,
+            )
+            * _DISK_SAFETY_MARGIN
+        )
+        disk_check.check_disk_space(work_dir, required)
+
+        paths = _intermediate_paths(work_dir, group)
+        by_name = {path.name: path for path in paths}
+
+        def load_frame(name: str) -> np.ndarray:
+            cancel.raise_if_cancelled()
+            return _read_intermediate(by_name[name])
+
+        composed = compose_negative(
+            layout,
+            load_frame,
+            cancel=cancel,
+            on_progress=lambda: progress.advance(source_index, PipelineStep.WARP),
+            **_compose_kwargs(
+                entry,
+                profile=profile,
+                valid_rect=valid_rect,
+                base_refs=base_refs,
+                film_kind=film_kind,
+            ),
+        )
+        progress.advance(source_index, PipelineStep.BLEND)
+        cancel.raise_if_cancelled()
+    except CancelledError:
+        return _GroupCompose("cancelled")
+    except disk_check.DiskCheckError as exc:
+        # Run-level, like prepare's and stitch's own disk checks: the
+        # queue's waiting-for-disk path keys off this code.
+        raise StitchError(exc.code, exc.message) from exc
+    except StitchError as exc:
+        failure = (exc.code, exc.message)
+    except MemoryError as exc:
+        return _GroupCompose("infrastructure", error=exc)
+    except Exception as exc:  # noqa: BLE001
+        failure = (Code.STITCH_FAILED, str(exc))
+
+    try:
+        if failure is not None:
+            compose_artifact.write_failure(
+                work_dir,
+                group.group_id,
+                fingerprint,
+                code=failure[0].value,
+                message=failure[1],
+                record_fields=record.assigned_fields(),
+                warnings=warnings,
+            )
+            return _GroupCompose("failed", failure=failure)
+
+        assert composed is not None and entry.layout is not None
+        products = compose_artifact.SolveProducts(
+            layout=entry.layout,
+            frame_size=entry.frame_size,
+            ca_maps=entry.ca_maps,
+            pairs=entry.pairs,
+            rectification=entry.rectification,
+            valid_rect=valid_rect,
+            record_fields=record.assigned_fields(),
+            warnings=warnings,
+        )
+        height, width = composed.img_log.shape[:2]
+        artifact_bytes = compose_artifact.write_artifact(
+            work_dir, group.group_id, fingerprint, composed, products
+        )
+    except OSError as exc:
+        return _GroupCompose("infrastructure", error=exc)
+    finally:
+        # Release the canvas before the next group solves.
+        composed = None
+
+    return _GroupCompose(
+        "composed",
+        width=int(width),
+        height=int(height),
+        artifact_bytes=artifact_bytes,
+        canvas_size=entry.layout.canvas_size,
+    )
 
 
 def run_compose(
@@ -1510,145 +1687,54 @@ def run_compose(
             film_kind=film_kind,
             roll=roll,
         )
-        record = _tracked_record(group)
-        entry = _SolvedNegative(group=group, record=record, pairs=[])
-        warnings: list[tuple[str, str]] = []
-
-        def on_group_warning(code: Code, message: str, _sink=warnings) -> None:
-            _sink.append((code.value, message))
-            on_warning(code, message)
-
-        # Deterministic failures (a solve gate, an oversized canvas) become
-        # failure artifacts the commit records; infrastructure failures
-        # (out of memory, a write error) do not, so the commit retries the
-        # group in full instead of inheriting a failure a plain stitch
-        # would not have had.
-        failure: tuple[Code, str] | None = None
-        try:
-            layout, frame_size, ca_maps = _solve_negative(
-                work_dir,
-                entry,
-                grid=work_manifest.grid_spec,
-                workers=workers,
-                cancel=cancel,
-                progress=progress,
-                source_index=source_index,
-                on_warning=on_group_warning,
-                profile=profile,
-            )
-            entry.layout = layout
-            entry.frame_size = frame_size
-            entry.ca_maps = ca_maps
-            valid_rect = largest_valid_rect(
-                layout, frame_size, rectification=entry.rectification
-            )
-
-            required = math.ceil(
-                compose_artifact.estimate_artifact_bytes(
-                    layout.canvas_size,
-                    channels,
-                    passthrough=max(layout.canvas_size) <= ANALYSIS_PASSTHROUGH_PX,
-                )
-                * _DISK_SAFETY_MARGIN
-            )
-            disk_check.check_disk_space(work_dir, required)
-
-            paths = _intermediate_paths(work_dir, group)
-            by_name = {path.name: path for path in paths}
-
-            def load_frame(name: str, _by_name=by_name) -> np.ndarray:
-                cancel.raise_if_cancelled()
-                return _read_intermediate(_by_name[name])
-
-            composed = compose_negative(
-                layout,
-                load_frame,
-                cancel=cancel,
-                on_progress=lambda _i=source_index: progress.advance(
-                    _i, PipelineStep.WARP
-                ),
-                **_compose_kwargs(
-                    entry,
-                    profile=profile,
-                    valid_rect=valid_rect,
-                    base_refs=base_refs,
-                    film_kind=film_kind,
-                ),
-            )
-            progress.advance(source_index, PipelineStep.BLEND)
-            cancel.raise_if_cancelled()
-        except CancelledError:
+        result = _compose_group(
+            work_dir,
+            group,
+            source_index=source_index,
+            grid=work_manifest.grid_spec,
+            workers=workers,
+            profile=profile,
+            base_refs=base_refs,
+            film_kind=film_kind,
+            channels=channels,
+            fingerprint=fingerprint,
+            cancel=cancel,
+            progress=progress,
+            on_warning=on_warning,
+        )
+        if result.status == "cancelled":
             cancelled = True
             break
-        except disk_check.DiskCheckError as exc:
-            # Run-level, like prepare's and stitch's own disk checks: the
-            # queue's waiting-for-disk path keys off this code.
-            raise StitchError(exc.code, exc.message) from exc
-        except StitchError as exc:
-            failure = (exc.code, exc.message)
-        except MemoryError as exc:
-            _compose_infrastructure_failure(emit, run_id, group, exc)
+        if result.status == "infrastructure":
+            assert result.error is not None
+            _compose_infrastructure_failure(emit, run_id, group, result.error)
             failed_ids.append(group.group_id)
             continue
-        except Exception as exc:  # noqa: BLE001
-            failure = (Code.STITCH_FAILED, str(exc))
-
-        try:
-            if failure is not None:
-                compose_artifact.write_failure(
-                    work_dir,
-                    group.group_id,
-                    fingerprint,
-                    code=failure[0].value,
-                    message=failure[1],
-                    record_fields=record.assigned_fields(),
-                    warnings=warnings,
+        if result.status == "failed":
+            assert result.failure is not None
+            message = result.failure[1]
+            emit(
+                ErrorEvent(
+                    run_id=run_id,
+                    code=result.failure[0],
+                    message=(
+                        message
+                        if message.startswith(group.group_id)
+                        else f"{group.group_id}: {message}"
+                    ),
                 )
-                message = failure[1]
-                emit(
-                    ErrorEvent(
-                        run_id=run_id,
-                        code=failure[0],
-                        message=(
-                            message
-                            if message.startswith(group.group_id)
-                            else f"{group.group_id}: {message}"
-                        ),
-                    )
-                )
-                failed_ids.append(group.group_id)
-                continue
-
-            products = compose_artifact.SolveProducts(
-                layout=entry.layout,
-                frame_size=entry.frame_size,
-                ca_maps=entry.ca_maps,
-                pairs=entry.pairs,
-                rectification=entry.rectification,
-                valid_rect=valid_rect,
-                record_fields=record.assigned_fields(),
-                warnings=warnings,
             )
-            height, width = composed.img_log.shape[:2]
-            artifact_bytes = compose_artifact.write_artifact(
-                work_dir, group.group_id, fingerprint, composed, products
-            )
-        except OSError as exc:
-            _compose_infrastructure_failure(emit, run_id, group, exc)
             failed_ids.append(group.group_id)
             continue
-        finally:
-            # Release the canvas before the next group solves.
-            composed = None
 
         composed_ids.append(group.group_id)
         emit(
             NegativeComposed(
                 run_id=run_id,
                 group_id=group.group_id,
-                width=int(width),
-                height=int(height),
-                artifact_bytes=artifact_bytes,
+                width=result.width,
+                height=result.height,
+                artifact_bytes=result.artifact_bytes,
             )
         )
 
@@ -1672,6 +1758,128 @@ def _compose_infrastructure_failure(
     )
 
 
+def _worker_count(work_manifest: Manifest, jobs: int | None) -> int:
+    try:
+        return concurrency.resolve_worker_count(work_manifest.shots_per_negative, jobs)
+    except concurrency.MemoryBudgetError as exc:
+        raise StitchError(exc.code, exc.message) from exc
+
+
+def _new_progress(
+    groups: list[GroupRecord], *, emit: EmitFn, run_id: str
+) -> tuple[_StitchProgress, dict[str, int]]:
+    """The run's progress counter, sized for `groups`, and each group's
+    source index."""
+    frame_count = sum(len(g.members) for g in groups)
+    progress = _StitchProgress(
+        total=frame_count * _STEPS_PER_FRAME + len(groups) * _STEPS_PER_NEGATIVE,
+        emit=emit,
+        run_id=run_id,
+    )
+    return progress, {g.group_id: i for i, g in enumerate(groups)}
+
+
+def _ensure_composed(
+    work_dir: Path,
+    groups: list[GroupRecord],
+    *,
+    work_manifest: Manifest,
+    work_manifest_sha256: str,
+    roll: RollManifest,
+    profile,
+    rig_profile_id: str | None,
+    film_kind: FilmKind,
+    workers: int,
+    cancel: CancellationToken,
+    progress: _StitchProgress,
+    source_index_by_group: dict[str, int],
+    emit: EmitFn,
+    run_id: str,
+) -> tuple[dict[str, tuple[int, int]], set[str], bool]:
+    """A parallel commit's work ahead of the publish lock: make sure every
+    group has a valid compose artifact, composing the ones that have none
+    (or a stale one) to disk now, one canvas at a time, so the publish
+    section only ever finishes from artifacts. `roll` is a read-only
+    snapshot; nothing is written to the roll.
+
+    Returns the canvas size of each group whose artifact is a success
+    (for the disk check), the groups this call composed (whose progress
+    steps it spent), and whether the run was cancelled.
+
+    A deterministic compose failure is left as a failure artifact: the
+    publish section adopts it and records the failure, exactly as it does
+    for `stitch --compose-only`'s. An infrastructure failure (memory, a
+    write error) leaves nothing, and the publish section falls back to the
+    full in-process path for that group."""
+
+    def on_warning(code: Code, message: str) -> None:
+        emit(WarningEvent(run_id=run_id, code=code, message=message))
+
+    channels = 1 if film_kind is FilmKind.MONOCHROME else 3
+    canvases: dict[str, tuple[int, int]] = {}
+    composed_here: set[str] = set()
+    for group in groups:
+        if cancel.cancelled:
+            return canvases, composed_here, True
+        fingerprint = _compose_fingerprint(
+            work_manifest_sha256=work_manifest_sha256,
+            group=group,
+            rig_profile_id=rig_profile_id,
+            profile=profile,
+            film_kind=film_kind,
+            roll=roll,
+        )
+        try:
+            loaded = compose_artifact.load_artifact(
+                work_dir, group.group_id, fingerprint
+            )
+        except (compose_artifact.ArtifactUnusableError, ValueError) as exc:
+            on_warning(
+                Code.COMPOSE_ARTIFACT_STALE,
+                f"{group.group_id}: the compose artifact in {work_dir} cannot "
+                f"be used ({exc}); composing the negative now",
+            )
+            loaded = None
+        else:
+            if loaded is not None:
+                if loaded.composed is not None:
+                    canvases[group.group_id] = loaded.products.layout.canvas_size
+                loaded = None
+                continue
+
+        # The solve's warnings are stored in the artifact and replayed when
+        # the publish section adopts it, so they are not emitted here too.
+        result = _compose_group(
+            work_dir,
+            group,
+            source_index=source_index_by_group[group.group_id],
+            grid=work_manifest.grid_spec,
+            workers=workers,
+            profile=profile,
+            base_refs=_locked_base_refs(roll),
+            film_kind=film_kind,
+            channels=channels,
+            fingerprint=fingerprint,
+            cancel=cancel,
+            progress=progress,
+            on_warning=lambda code, message: None,
+        )
+        if result.status == "cancelled":
+            return canvases, composed_here, True
+        if result.status == "infrastructure":
+            on_warning(
+                Code.COMPOSE_ARTIFACT_STALE,
+                f"{group.group_id}: the compose did not finish "
+                f"({result.error!r}); computing the negative in full",
+            )
+            continue
+        composed_here.add(group.group_id)
+        if result.status == "composed":
+            assert result.canvas_size is not None
+            canvases[group.group_id] = result.canvas_size
+    return canvases, composed_here, False
+
+
 def run_stitch(
     work_dir: Path,
     out_dir: Path,
@@ -1687,6 +1895,7 @@ def run_stitch(
     auto_rotate: bool = True,
     auto_crop: bool = True,
     defer_roll_refresh: bool = False,
+    publish_lock: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -1729,19 +1938,41 @@ def run_stitch(
 
     Film kind is read from the roll manifest (set at `roll init`), not from
     a CLI flag.
+
+    `publish_lock` selects the mode (docs/PARALLEL_STITCH_PLAN.md §3.3). With
+    `None` the caller holds the roll lock exclusively for the whole command
+    and the stitch runs as it always has. With a callable returning a context
+    manager (the per-roll exclusive publish lock) this is a *parallel
+    commit*: the caller holds the roll lock only shared, so another commit
+    of the same roll may be running. Then the roll-independent work — any
+    compose the commit has no valid artifact for — runs first, with no roll
+    write; planning, the clamp, naming, the TIFF write and the publish
+    transaction run inside the lock, against a working copy loaded inside
+    it; and the order-independent tail (scratch detection, the deband refit,
+    the seeds, the end-of-run write, previews, `negative_done`) runs after
+    the release. It requires `defer_roll_refresh` and no `negatives`: a
+    stitch that recomputes the highlight lock or re-stitches existing
+    negatives needs the exclusive roll lock.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
 
+    parallel = publish_lock is not None
+    if parallel and not defer_roll_refresh:
+        raise ValueError("a parallel commit must defer the roll refresh")
+    if parallel and negatives:
+        raise ValueError("a parallel commit cannot re-stitch named negatives")
+
     # `roll` below is a *working copy*, loaded once by `plan_rerun`, that
     # drives planning, naming, the clamp's reference bounds and the
-    # previews. It is accurate only because the roll lock keeps every other
-    # writer out for the whole run. It is never saved wholesale: each
-    # database write goes through `_persist`, which copies just this run's
-    # own pieces into a fresh roll inside one transaction. Parallel
-    # stitching will lift the lock, so anything that reads `roll` for
-    # another writer's state must be revisited then
-    # (docs/TRANSACTIONAL_WRITES_PLAN.md §7).
+    # previews. It is accurate because it is loaded while the caller holds
+    # either the roll lock exclusively or the publish lock (so no other
+    # stitch can be publishing), and every field it is used for is
+    # order-dependent state only a publish section changes. It is never saved
+    # wholesale: each database write goes through `_persist`, which copies
+    # just this run's own pieces into a fresh roll inside one transaction.
+    # Anything that reads `roll` for another writer's state after the
+    # publish lock is released must not (docs/TRANSACTIONAL_WRITES_PLAN.md §7).
 
     def on_warning(code: Code, message: str) -> None:
         emit(WarningEvent(run_id=run_id, code=code, message=message))
@@ -1822,306 +2053,466 @@ def run_stitch(
         ],
         stitch_params=_stitch_params(profile),
     )
-    try:
-        plan = plan_rerun(out_dir, invariants, rules=ROLL_RULES)
-    except (
-        OutputFolderError,
-        BadManifestError,
-        repo.RollNotRegisteredError,
-        RollInvariantMismatchError,
-    ) as exc:
-        raise StitchError(exc.code, exc.message) from exc
 
-    # Section 5.4 decision 3: there is no `OUTPUT_CONFLICT` here. Section
-    # 3.4's naming rule makes one impossible — `allocate_output_name` cannot
-    # return a name another negative already claims — so the only outputs
-    # `plan.conflicting_outputs` can name are earlier runs' files this run
-    # does not touch. Recovery cleanup of never-finished negatives stays.
-    apply_recovery_cleanup(out_dir, plan)
-
-    roll = plan.existing_manifest
-    assert roll is not None
-
-    _require_roll_ready(roll)
-
-    if negatives:
-        wanted_members = {
-            frozenset(n.members) for n in roll.negatives if n.negative_id in negatives
-        }
-        groups = [g for g in groups if frozenset(g.members) in wanted_members]
-        if not groups:
-            raise StitchError(
-                Code.WORK_MANIFEST_UNUSABLE,
-                "none of the requested --negatives match a group in this work manifest",
-            )
-
-    run_record, records_by_group, removals_by_group, new_negative_ids = (
-        _append_this_run(
-            roll,
-            work_manifest,
-            groups,
-            run_id,
-            invariants,
-            work_dir,
-            emit=emit,
-        )
-    )
-
-    # §3.3: the camera comparison's second home. `roll set-base-frame`
-    # compares only when the roll already has a `camera_color` block; a
-    # fresh roll has none until this run seeds one, so the first run
-    # compares here. A warning, not an error: the measurement may still be
-    # fine (§7.2).
-    base_camera_model = roll.film_base.get("camera_model")
-    roll_camera_model = (
-        roll.camera_color.camera_model if roll.camera_color is not None else None
-    )
-    if (
-        base_camera_model
-        and roll_camera_model
-        and base_camera_model != roll_camera_model
-    ):
-        on_warning(
-            Code.FILM_BASE_CAMERA_CONFLICT,
-            "the roll's film-base reference was shot on a "
-            f"{base_camera_model}, but this roll's scans were made on a "
-            f"{roll_camera_model}; the measurement may still be fine",
-        )
-
-    # Auto-crop is a roll setting (`setup.auto_crop`, off until ticked),
-    # read here so the checkbox's current value reaches every negative this
-    # run stitches; `--no-auto-crop` can only turn it off (§4.3).
-    setup = roll.setup or {}
-    roll_format = setup.get("format")
-    crop_enabled = auto_crop and bool(setup.get("auto_crop", False))
-    crop_ratio = (
-        auto_crop_module.FORMAT_RATIOS.get(roll_format) if crop_enabled else None
-    )
-    if crop_enabled and crop_ratio is None:
-        # Once per run, whatever the negative count; each negative records
-        # `no_format` in its own evidence block.
-        emit(
-            WarningEvent(
-                run_id=run_id,
-                code=Code.AUTO_CROP_NO_FORMAT,
-                message="auto-crop is enabled but the roll has no film format "
-                "set; choose one (`roll set-setup --format`)",
-            )
-        )
-
-    try:
-        workers = concurrency.resolve_worker_count(
-            work_manifest.shots_per_negative, jobs
-        )
-    except concurrency.MemoryBudgetError as exc:
-        raise StitchError(exc.code, exc.message) from exc
-
-    frame_count = sum(len(g.members) for g in groups)
-    progress = _StitchProgress(
-        total=frame_count * _STEPS_PER_FRAME + len(groups) * _STEPS_PER_NEGATIVE,
-        emit=emit,
-        run_id=run_id,
-    )
-    source_index_by_group = {g.group_id: i for i, g in enumerate(groups)}
     work_manifest_sha256 = hashing.sha256_file(work_dir / MANIFEST_FILENAME)
-
-    # Solve every layout before the disk check, so the free-space formula
-    # has real canvas sizes (see the module docstring). A valid compose
-    # artifact (`stitch --compose-only`) stands in for a group's solve and
-    # its roll-independent compose; anything else about it — missing,
-    # stale, unreadable — means today's full path. Correctness never
-    # depends on the artifact.
-    solved: list[_SolvedNegative] = []
     cancelled = False
-    for group in groups:
-        record = records_by_group[group.group_id]
-        if cancel.cancelled:
-            cancelled = True
-            break
-        entry = _SolvedNegative(
-            group=group,
-            record=record,
-            pairs=[],
-            covered_to_remove=removals_by_group.get(group.group_id, []),
-        )
-        fingerprint = _compose_fingerprint(
-            work_manifest_sha256=work_manifest_sha256,
-            group=group,
-            rig_profile_id=rig_profile_id,
-            profile=profile,
-            film_kind=film_kind,
-            roll=roll,
-        )
-        try:
-            loaded = compose_artifact.load_artifact(
-                work_dir, group.group_id, fingerprint
-            )
-            if loaded is not None:
-                _adopt_artifact(
-                    entry,
-                    loaded,
-                    progress=progress,
-                    source_index=source_index_by_group[group.group_id],
-                    on_warning=on_warning,
-                )
-                solved.append(entry)
-                continue
-        except (compose_artifact.ArtifactUnusableError, ValueError) as exc:
-            on_warning(
-                Code.COMPOSE_ARTIFACT_STALE,
-                f"{group.group_id}: the compose artifact in {work_dir} cannot "
-                f"be used ({exc}); computing the negative in full",
-            )
-        try:
-            layout, frame_size, ca_maps = _solve_negative(
-                work_dir,
-                entry,
-                grid=work_manifest.grid_spec,
-                workers=workers,
-                cancel=cancel,
-                progress=progress,
-                source_index=source_index_by_group[group.group_id],
-                on_warning=on_warning,
-                profile=profile,
-            )
-        except CancelledError:
-            cancelled = True
-            break
-        except StitchError as exc:
-            entry.failure = (exc.code, exc.message)
-            solved.append(entry)
-            continue
-        except Exception as exc:  # noqa: BLE001
-            entry.failure = (Code.STITCH_FAILED, str(exc))
-            solved.append(entry)
-            continue
-        entry.layout = layout
-        entry.frame_size = frame_size
-        entry.ca_maps = ca_maps
-        solved.append(entry)
+    # Parallel mode only: the canvases of the groups whose compose artifact
+    # exists before the publish lock is taken (the disk check ran on them
+    # already), and the groups this process composed itself, whose compose
+    # progress is already spent.
+    precomposed_canvases: dict[str, tuple[int, int]] = {}
+    composed_here: set[str] = set()
 
-    if not cancelled:
-        # 6. Disk check on the output volume, now that canvases are known.
-        canvases = [e.layout.canvas_size for e in solved if e.layout is not None]
-        required = _required_free_bytes(canvases, estimate_roll_manifest_size(roll))
+    # -------------------------------------------------------------------
+    # BEFORE THE PUBLISH LOCK (parallel mode). Nothing here writes the
+    # roll: it reads a snapshot, and composes whatever the commit has no
+    # valid artifact for, onto disk, one canvas at a time. The shared roll
+    # lock (held by the caller) keeps every exclusive writer out, so the
+    # snapshot's film kind, film base, flat field and rig cannot change
+    # under us; only the order-dependent state (names, ids, the clamp's
+    # references, first-run seeding) can, and that is read again inside the
+    # lock.
+    # -------------------------------------------------------------------
+    if parallel:
+        # The invariants and the roll gates are checked again inside the
+        # lock, against the fresh copy. Checking the snapshot first only
+        # spares the user a compose that the publish section would refuse.
         try:
-            disk_check.check_disk_space(out_dir, required)
-        except disk_check.DiskCheckError as exc:
+            check_roll_invariants(roll_peek, invariants)
+        except RollInvariantMismatchError as exc:
             raise StitchError(exc.code, exc.message) from exc
-
-    # 7. Write the `running` roll manifest before publishing anything:
-    #    this run's record, its sources and its negatives, plus the roll
-    #    fields `_append_this_run` seeded.
-    _persist(
-        out_dir,
-        roll,
-        records=list(records_by_group.values()),
-        run=run_record,
-        roll_fields=(
-            "processing_params",
-            "stitch_params",
-            "icc_profile",
-            "camera_color",
-            "sources",
-        ),
-        work_sources=work_manifest.sources,
-    )
+        _require_roll_ready(roll_peek)
+        workers = _worker_count(work_manifest, jobs)
+        progress, source_index_by_group = _new_progress(
+            groups, emit=emit, run_id=run_id
+        )
+        precomposed_canvases, composed_here, cancelled = _ensure_composed(
+            work_dir,
+            groups,
+            work_manifest=work_manifest,
+            work_manifest_sha256=work_manifest_sha256,
+            roll=roll_peek,
+            profile=profile,
+            rig_profile_id=rig_profile_id,
+            film_kind=film_kind,
+            workers=workers,
+            cancel=cancel,
+            progress=progress,
+            source_index_by_group=source_index_by_group,
+            emit=emit,
+            run_id=run_id,
+        )
+        if not cancelled:
+            # 6. Disk check on the output volume, from the artifacts'
+            #    canvases.
+            required = _required_free_bytes(
+                list(precomposed_canvases.values()),
+                estimate_roll_manifest_size(roll_peek),
+            )
+            try:
+                disk_check.check_disk_space(out_dir, required)
+            except disk_check.DiskCheckError as exc:
+                raise StitchError(exc.code, exc.message) from exc
 
     published: list[str] = []
     failed: list[str] = []
-
-    # Section 3.4's clamp: the reference population the per-negative bounds
-    # are pulled back toward — prior runs' negatives, extended by each
-    # negative this run publishes.
-    reference_bounds = _reference_bounds(roll)
-    base_refs = _locked_base_refs(roll)
-    sources_by_filename = {s.filename: s for s in work_manifest.sources}
-
-    # 8. Composite and publish, negative by negative, in canonical order.
-    # Auto-rotation seeds only the negatives this run created fresh: an
-    # adopted one's ops log already reflects its first publish, and
-    # re-seeding would stack a second fine rotation on top of the first
-    # (and on top of any user edits made since). Auto-crop has one
-    # exception: an adopted negative whose latest crop is still
-    # `source: "auto"` gets a fresh one (`_crop_seed_for`), since a crop is
-    # a state op — the new one replaces the app's own guess rather than
-    # stacking on it.
     auto_edits: list[dict] = []
-    for entry in solved:
-        if cancelled or cancel.cancelled:
-            cancelled = True
-            break
-        if entry.failure is not None:
-            code, message = entry.failure
-            _record_failure(out_dir, roll, entry.record, code, message, emit, run_id)
-            failed.append(entry.group.group_id)
-            compose_artifact.remove_artifact(work_dir, entry.group.group_id)
-            continue
+    # The negatives published, in publish order, whose `negative_published`
+    # event waits for the publish lock to be released (parallel mode only).
+    awaiting_announcement: list[_PublishedNegative] = []
+    # The last group's after-publish work, run once the lock is released.
+    deferred_tail: _PublishedNegative | None = None
 
-        try:
-            crop_seed = (
-                _crop_seed_for(
-                    out_dir,
-                    entry.record,
-                    is_new=entry.record.negative_id in new_negative_ids,
-                    ratio=crop_ratio,
-                    preset=roll_format,
+    def announce(pub: _PublishedNegative) -> None:
+        """`negative_published` says the TIFF and its record are out and the
+        publish lock is free, so the app may start the roll's next commit.
+        In parallel mode it therefore waits for the release; with no lock to
+        wait for it goes out at once."""
+        if parallel:
+            awaiting_announcement.append(pub)
+        else:
+            emit(
+                NegativePublished(
+                    run_id=run_id,
+                    negative_id=pub.record.negative_id,
+                    output=pub.record.expected_output,
                 )
-                if crop_enabled
-                else None
             )
 
-            auto_edit_fields = _composite_and_publish(
-                work_dir=work_dir,
-                out_dir=out_dir,
-                entry=entry,
-                roll=roll,
-                run_id=run_id,
-                cancel=cancel,
-                emit=emit,
-                progress=progress,
-                source_index=source_index_by_group[entry.group.group_id],
-                profile=profile,
-                reference_bounds=reference_bounds,
-                base_refs=base_refs,
-                sources_by_filename=sources_by_filename,
-                film_kind=film_kind,
-                seed_rotation=(
-                    auto_rotate and entry.record.negative_id in new_negative_ids
-                ),
-                crop_seed=crop_seed,
+    def run_tail(pub: _PublishedNegative) -> None:
+        """The order-independent work after a negative is published:
+        scratch detection, the deband refit, the rotate/crop seeds and
+        `negative_done`. A failure here is recorded like any other failure
+        of the negative, as it was when this ran before the TIFF was
+        moved into place."""
+        try:
+            fields = _finish_published(
+                pub, out_dir=out_dir, film_kind=film_kind, run_id=run_id, emit=emit
             )
-        except CancelledError:
-            cancelled = True
-            break
-        except StitchError as exc:
-            _record_failure(
-                out_dir, roll, entry.record, exc.code, exc.message, emit, run_id
-            )
-            failed.append(entry.group.group_id)
-            continue
         except Exception as exc:  # noqa: BLE001
             _record_failure(
-                out_dir, roll, entry.record, Code.STITCH_FAILED, str(exc), emit, run_id
+                out_dir, roll, pub.record, Code.STITCH_FAILED, str(exc), emit, run_id
             )
-            failed.append(entry.group.group_id)
-            continue
+            failed.append(pub.entry.group.group_id)
+            published.remove(pub.record.expected_output)
+            return
+        auto_edits.extend(fields)
 
-        published.append(entry.record.expected_output)
-        # The artifact has done its job (or was never used): best effort.
-        compose_artifact.remove_artifact(work_dir, entry.group.group_id)
-        # The published negative joins the clamp's reference population for
-        # the negatives still to come.
-        block = entry.record.normalization
-        if block:
-            reference_bounds.append(
-                Bounds(
-                    floors=tuple(float(v) for v in block["floors"]),
-                    ceils=tuple(float(v) for v in block["ceils"]),
+    # -------------------------------------------------------------------
+    # THE PUBLISH SECTION. Parallel mode: under the exclusive publish
+    # lock, so commits of one roll run it one at a time, in order. The
+    # working copy `roll` is loaded here, inside the lock, and is therefore
+    # exact for everything order-dependent: the clamp's references, the
+    # tethered `NN` numbers and collision suffixes, short ids, first-run
+    # seeding. Exclusive mode: the same code with no lock to take, because
+    # the caller holds the roll lock exclusively for the whole command.
+    # -------------------------------------------------------------------
+    with publish_lock() if publish_lock is not None else contextlib.nullcontext():
+        try:
+            plan = plan_rerun(out_dir, invariants, rules=ROLL_RULES)
+        except (
+            OutputFolderError,
+            BadManifestError,
+            repo.RollNotRegisteredError,
+            RollInvariantMismatchError,
+        ) as exc:
+            raise StitchError(exc.code, exc.message) from exc
+
+        # Section 5.4 decision 3: there is no `OUTPUT_CONFLICT` here. Section
+        # 3.4's naming rule makes one impossible — `allocate_output_name` cannot
+        # return a name another negative already claims — so the only outputs
+        # `plan.conflicting_outputs` can name are earlier runs' files this run
+        # does not touch. Recovery cleanup of never-finished negatives stays.
+        apply_recovery_cleanup(out_dir, plan)
+
+        roll = plan.existing_manifest
+        assert roll is not None
+
+        _require_roll_ready(roll)
+
+        if negatives:
+            wanted_members = {
+                frozenset(n.members)
+                for n in roll.negatives
+                if n.negative_id in negatives
+            }
+            groups = [g for g in groups if frozenset(g.members) in wanted_members]
+            if not groups:
+                raise StitchError(
+                    Code.WORK_MANIFEST_UNUSABLE,
+                    "none of the requested --negatives match a group in this work manifest",
+                )
+
+        run_record, records_by_group, removals_by_group, new_negative_ids = (
+            _append_this_run(
+                roll,
+                work_manifest,
+                groups,
+                run_id,
+                invariants,
+                work_dir,
+                emit=emit,
+            )
+        )
+
+        # §3.3: the camera comparison's second home. `roll set-base-frame`
+        # compares only when the roll already has a `camera_color` block; a
+        # fresh roll has none until this run seeds one, so the first run
+        # compares here. A warning, not an error: the measurement may still be
+        # fine (§7.2).
+        base_camera_model = roll.film_base.get("camera_model")
+        roll_camera_model = (
+            roll.camera_color.camera_model if roll.camera_color is not None else None
+        )
+        if (
+            base_camera_model
+            and roll_camera_model
+            and base_camera_model != roll_camera_model
+        ):
+            on_warning(
+                Code.FILM_BASE_CAMERA_CONFLICT,
+                "the roll's film-base reference was shot on a "
+                f"{base_camera_model}, but this roll's scans were made on a "
+                f"{roll_camera_model}; the measurement may still be fine",
+            )
+
+        # Auto-crop is a roll setting (`setup.auto_crop`, off until ticked),
+        # read here so the checkbox's current value reaches every negative this
+        # run stitches; `--no-auto-crop` can only turn it off (§4.3).
+        setup = roll.setup or {}
+        roll_format = setup.get("format")
+        crop_enabled = auto_crop and bool(setup.get("auto_crop", False))
+        crop_ratio = (
+            auto_crop_module.FORMAT_RATIOS.get(roll_format) if crop_enabled else None
+        )
+        if crop_enabled and crop_ratio is None:
+            # Once per run, whatever the negative count; each negative records
+            # `no_format` in its own evidence block.
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.AUTO_CROP_NO_FORMAT,
+                    message="auto-crop is enabled but the roll has no film format "
+                    "set; choose one (`roll set-setup --format`)",
                 )
             )
-        if auto_edit_fields:
-            auto_edits.extend(auto_edit_fields)
+
+        if not parallel:
+            workers = _worker_count(work_manifest, jobs)
+            progress, source_index_by_group = _new_progress(
+                groups, emit=emit, run_id=run_id
+            )
+
+        # Solve every layout before the disk check, so the free-space formula
+        # has real canvas sizes (see the module docstring). A valid compose
+        # artifact (`stitch --compose-only`, or this commit's own compose
+        # ahead of the lock) stands in for a group's solve and its
+        # roll-independent compose; anything else about it — missing, stale,
+        # unreadable — means today's full path. Correctness never depends on
+        # the artifact.
+        solved: list[_SolvedNegative] = []
+        for group in groups:
+            record = records_by_group[group.group_id]
+            if cancel.cancelled:
+                cancelled = True
+                break
+            entry = _SolvedNegative(
+                group=group,
+                record=record,
+                pairs=[],
+                covered_to_remove=removals_by_group.get(group.group_id, []),
+            )
+            fingerprint = _compose_fingerprint(
+                work_manifest_sha256=work_manifest_sha256,
+                group=group,
+                rig_profile_id=rig_profile_id,
+                profile=profile,
+                film_kind=film_kind,
+                roll=roll,
+            )
+            try:
+                loaded = compose_artifact.load_artifact(
+                    work_dir, group.group_id, fingerprint
+                )
+                if loaded is not None:
+                    spent = group.group_id in composed_here
+                    _adopt_artifact(
+                        entry,
+                        loaded,
+                        progress=progress,
+                        source_index=source_index_by_group[group.group_id],
+                        on_warning=on_warning,
+                        advance_progress=not spent,
+                    )
+                    entry.compose_progress_spent = spent and entry.composed is not None
+                    solved.append(entry)
+                    continue
+            except (compose_artifact.ArtifactUnusableError, ValueError) as exc:
+                on_warning(
+                    Code.COMPOSE_ARTIFACT_STALE,
+                    f"{group.group_id}: the compose artifact in {work_dir} cannot "
+                    f"be used ({exc}); computing the negative in full",
+                )
+            try:
+                layout, frame_size, ca_maps = _solve_negative(
+                    work_dir,
+                    entry,
+                    grid=work_manifest.grid_spec,
+                    workers=workers,
+                    cancel=cancel,
+                    progress=progress,
+                    source_index=source_index_by_group[group.group_id],
+                    on_warning=on_warning,
+                    profile=profile,
+                )
+            except CancelledError:
+                cancelled = True
+                break
+            except StitchError as exc:
+                entry.failure = (exc.code, exc.message)
+                solved.append(entry)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                entry.failure = (Code.STITCH_FAILED, str(exc))
+                solved.append(entry)
+                continue
+            entry.layout = layout
+            entry.frame_size = frame_size
+            entry.ca_maps = ca_maps
+            solved.append(entry)
+
+        if not cancelled:
+            # 6. Disk check on the output volume, now that canvases are known.
+            #    In parallel mode the artifacts' canvases were checked before
+            #    the lock; only a group solved in here (its artifact was
+            #    missing or unusable) is left to check.
+            canvases = [
+                e.layout.canvas_size
+                for e in solved
+                if e.layout is not None and e.group.group_id not in precomposed_canvases
+            ]
+            if canvases or not parallel:
+                required = _required_free_bytes(
+                    canvases, estimate_roll_manifest_size(roll)
+                )
+                try:
+                    disk_check.check_disk_space(out_dir, required)
+                except disk_check.DiskCheckError as exc:
+                    raise StitchError(exc.code, exc.message) from exc
+
+        # 7. Write the `running` roll manifest before publishing anything:
+        #    this run's record, its sources and its negatives, plus the roll
+        #    fields `_append_this_run` seeded.
+        _persist(
+            out_dir,
+            roll,
+            records=list(records_by_group.values()),
+            run=run_record,
+            roll_fields=(
+                "processing_params",
+                "stitch_params",
+                "icc_profile",
+                "camera_color",
+                "sources",
+            ),
+            work_sources=work_manifest.sources,
+        )
+
+        # Section 3.4's clamp: the reference population the per-negative bounds
+        # are pulled back toward — prior runs' negatives, extended by each
+        # negative this run publishes.
+        reference_bounds = _reference_bounds(roll)
+        base_refs = _locked_base_refs(roll)
+        sources_by_filename = {s.filename: s for s in work_manifest.sources}
+
+        # 8. Composite and publish, negative by negative, in canonical order.
+        # Auto-rotation seeds only the negatives this run created fresh: an
+        # adopted one's ops log already reflects its first publish, and
+        # re-seeding would stack a second fine rotation on top of the first
+        # (and on top of any user edits made since). Auto-crop has one
+        # exception: an adopted negative whose latest crop is still
+        # `source: "auto"` gets a fresh one (`_crop_seed_for`), since a crop is
+        # a state op — the new one replaces the app's own guess rather than
+        # stacking on it.
+        #
+        # What runs inside the lock, per negative: the clamp and the encode
+        # (`finish_negative`), the gates and measurements, the TIFF write, the
+        # move into place, the publish transaction, and the removal of the
+        # negative's staging directory (which must be gone before the lock
+        # is released, or the next commit's plan sees it as unrelated). The
+        # order-independent tail — scratch detection, the deband refit, the
+        # rotate/crop seeds, `negative_done` — needs the encoded image, which
+        # is why it is not simply deferred for every negative: each one would
+        # hold a canvas in memory until the lock was released. So the tail
+        # of every group but the last runs here, inside the lock; only the
+        # last group's tail (the one a one-negative commit has) and the
+        # end-of-run work run after the release.
+        last_index = len(solved) - 1
+        for index, entry in enumerate(solved):
+            if cancelled or cancel.cancelled:
+                cancelled = True
+                break
+            if entry.failure is not None:
+                code, message = entry.failure
+                _record_failure(
+                    out_dir, roll, entry.record, code, message, emit, run_id
+                )
+                failed.append(entry.group.group_id)
+                compose_artifact.remove_artifact(work_dir, entry.group.group_id)
+                continue
+
+            try:
+                crop_seed = (
+                    _crop_seed_for(
+                        out_dir,
+                        entry.record,
+                        is_new=entry.record.negative_id in new_negative_ids,
+                        ratio=crop_ratio,
+                        preset=roll_format,
+                    )
+                    if crop_enabled
+                    else None
+                )
+
+                pub = _publish_negative(
+                    work_dir=work_dir,
+                    out_dir=out_dir,
+                    entry=entry,
+                    roll=roll,
+                    run_id=run_id,
+                    cancel=cancel,
+                    emit=emit,
+                    progress=progress,
+                    source_index=source_index_by_group[entry.group.group_id],
+                    profile=profile,
+                    reference_bounds=reference_bounds,
+                    base_refs=base_refs,
+                    sources_by_filename=sources_by_filename,
+                    film_kind=film_kind,
+                    is_new=entry.record.negative_id in new_negative_ids,
+                    seed_rotation=(
+                        auto_rotate and entry.record.negative_id in new_negative_ids
+                    ),
+                    crop_seed=crop_seed,
+                )
+            except CancelledError:
+                cancelled = True
+                break
+            except StitchError as exc:
+                _record_failure(
+                    out_dir, roll, entry.record, exc.code, exc.message, emit, run_id
+                )
+                failed.append(entry.group.group_id)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                _record_failure(
+                    out_dir,
+                    roll,
+                    entry.record,
+                    Code.STITCH_FAILED,
+                    str(exc),
+                    emit,
+                    run_id,
+                )
+                failed.append(entry.group.group_id)
+                continue
+
+            published.append(entry.record.expected_output)
+            # The artifact has done its job (or was never used): best effort.
+            compose_artifact.remove_artifact(work_dir, entry.group.group_id)
+            # The published negative joins the clamp's reference population for
+            # the negatives still to come.
+            block = entry.record.normalization
+            if block:
+                reference_bounds.append(
+                    Bounds(
+                        floors=tuple(float(v) for v in block["floors"]),
+                        ceils=tuple(float(v) for v in block["ceils"]),
+                    )
+                )
+            announce(pub)
+            if parallel and index == last_index:
+                deferred_tail = pub
+            else:
+                run_tail(pub)
+
+    # -------------------------------------------------------------------
+    # AFTER THE PUBLISH LOCK. Nothing below depends on the order commits
+    # ran in: each write is its own transaction against fresh state. The
+    # caller still holds the roll lock (shared, in parallel mode) until the
+    # command exits, so no exclusive writer can interleave.
+    # -------------------------------------------------------------------
+    for pub in awaiting_announcement:
+        emit(
+            NegativePublished(
+                run_id=run_id,
+                negative_id=pub.record.negative_id,
+                output=pub.record.expected_output,
+            )
+        )
+    if deferred_tail is not None:
+        run_tail(deferred_tail)
+        deferred_tail = None
 
     if cancelled:
         status = "cancelled"
@@ -2216,9 +2607,23 @@ def run_stitch(
     # touched — `force=True` regenerates every completed negative's cached
     # preview PNG rather than only the newly published set, so a stale
     # colour never lingers in the filmstrip.
+    #
+    # In parallel mode the working copy was loaded when this commit took the
+    # publish lock, so it holds the negatives of commits that published
+    # before it, whose own previews and seeds may still be in progress in
+    # their process. Rendering those here would race them; this run
+    # previews only its own negatives (a view sharing their records, so the
+    # preview paths land on the working copy as usual).
+    preview_roll = roll
+    if parallel:
+        preview_roll = copy.copy(roll)
+        preview_roll.negatives = [n for n in roll.negatives if n.run_id == run_id]
     try:
         previews.sync_previews(
-            out_dir, roll, published, force=lock_changed or auto_neutral_changed
+            out_dir,
+            preview_roll,
+            published,
+            force=lock_changed or auto_neutral_changed,
         )
     except Exception as exc:  # noqa: BLE001 — a preview failure must not fail the stitch
         emit(
@@ -2689,7 +3094,82 @@ def _refit_deband(
         )
 
 
-def _composite_and_publish(
+@dataclasses.dataclass
+class _PublishedNegative:
+    """A negative whose TIFF and record are published, with what its
+    order-independent tail still needs: the encoded image (scratch
+    detection and the deband refit read it) and the seeds measured before
+    the TIFF was written. Dropped once `_finish_published` has run."""
+
+    entry: _SolvedNegative
+    record: NegativeRecord
+    image: np.ndarray
+    width: int
+    height: int
+    worst_overlap_mad: float
+    auto_rotation_deg: float | None
+    crop_seed: _CropSeed | None
+    crop_outcome: auto_crop_module.AutoCrop | auto_crop_module.Refusal | None
+    crop_flipped: bool
+    crop_fine_angle: float
+
+
+def _reference_identity(roll: RollManifest) -> tuple[Any, Any, Any]:
+    """What a negative normalized against `roll` depends on in its roll-level
+    references: the film base's source hash and density, and the flat field's
+    gain-map hash."""
+    base = roll.film_base or {}
+    flat = roll.flat_field or {}
+    density = base.get("density")
+    return (
+        base.get("source_sha256"),
+        None if density is None else list(density),
+        flat.get("gain_map_sha256"),
+    )
+
+
+def _lock_references(
+    fresh: RollManifest, expected: tuple[Any, Any, Any], stamp: str
+) -> None:
+    """Inside a publish transaction: verify that the roll's film-base and
+    flat-field references are still the ones the negative being published
+    was normalized against, then lock them (`locked_at`) if this is the
+    first publish (REBATE_ANCHORING §3.2 rule 5; docs/PARALLEL_STITCH_PLAN.md
+    §3.5).
+
+    The roll lock already keeps `set-base-frame` and the flat-field setter
+    out, so a mismatch means a stale compose artifact or a bug; raising
+    `FILM_BASE_CHANGED` rolls the whole publish transaction back, and the
+    negative is recorded as failed instead of being published against the
+    wrong reference. Only `locked_at` is written, never the whole block."""
+    source_sha256, density, gain_map_sha256 = expected
+    base = fresh.film_base
+    if (
+        base is None
+        or base.get("source_sha256") != source_sha256
+        or (None if base.get("density") is None else list(base["density"])) != density
+    ):
+        raise StitchError(
+            Code.FILM_BASE_CHANGED,
+            "the roll's film-base reference changed while this negative was "
+            "being stitched, so its pixels no longer match the roll; "
+            "stitch it again",
+        )
+    flat = fresh.flat_field
+    if (flat or {}).get("gain_map_sha256") != gain_map_sha256:
+        raise StitchError(
+            Code.FILM_BASE_CHANGED,
+            "the roll's flat-field reference changed while this negative was "
+            "being stitched, so its pixels no longer match the roll; "
+            "stitch it again",
+        )
+    if base.get("locked_at") is None:
+        base["locked_at"] = stamp
+    if flat is not None and flat.get("locked_at") is None:
+        flat["locked_at"] = stamp
+
+
+def _publish_negative(
     *,
     work_dir: Path,
     out_dir: Path,
@@ -2705,31 +3185,28 @@ def _composite_and_publish(
     base_refs: tuple[float, ...] | None = None,
     sources_by_filename: dict | None = None,
     film_kind: FilmKind = FilmKind.COLOUR,
+    is_new: bool = True,
     seed_rotation: bool = False,
     crop_seed: _CropSeed | None = None,
-) -> list[dict]:
-    """Composite one negative, apply the remaining gates, and stage-then-
-    publish it atomically, exactly as Phase 1 publishes a group.
+) -> _PublishedNegative:
+    """The order-dependent half of a negative: composite it (or finish its
+    compose artifact against `reference_bounds`), apply the remaining gates,
+    and stage-then-publish it atomically, exactly as Phase 1 publishes a
+    group. In a parallel commit this runs inside the publish lock.
 
     With a calibrated profile, the warp folds in the profile's geometry and
     — in "maps" mode only — its chromatic aberration maps.
 
     With `seed_rotation` set, the composite also gets one pass of
-    `auto_rotate.estimate_rotation` and — when it finds a trustworthy
-    rebate tilt — one `rotate_fine` ops-log entry is appended to the
-    negative, seeded as the auto edit.
+    `auto_rotate.estimate_rotation`, and with `crop_seed` set one pass of
+    `auto_crop.estimate_crop` — measured under the rotation to be seeded
+    (or an adopted negative's existing one). Both are measured here, while
+    the pixels are in memory; the ops-log entries they produce are appended
+    by `_finish_published`, after the publish.
 
-    With `crop_seed` set, the composite also gets one pass of
-    `auto_crop.estimate_crop` — measured under the rotation just seeded (or
-    an adopted negative's existing one) — and, when it finds a trustworthy
-    picture boundary, one `crop` ops-log entry tagged `source: "auto"` is
-    appended after the rotation. An adopted negative whose live crop already
-    is that window gets no new op; a refusal leaves its old op alone. Either
-    way the negative's `auto_crop` evidence block records what happened.
-
-    Returns the `edit_recorded` field sets to emit, one per seeded op (each
-    built from the net state after that op, minus the preview path, which
-    `sync_previews` fills in later); empty when nothing was seeded.
+    Returns the `_PublishedNegative` carrying what `_finish_published`
+    needs. The negative's staging directory is removed before this returns:
+    the next commit's plan must not find it.
 
     The published TIFF itself is never rotated or cropped: the rotation
     and crop are nondestructive ops-log entries, and their pixels are
@@ -2778,8 +3255,9 @@ def _composite_and_publish(
             # --compose-only`; only the clamp and everything after it
             # remain. The warp steps it spent are advanced here so the
             # run's declared step total still adds up.
-            for _ in paths:
-                on_frame_warped()
+            if not entry.compose_progress_spent:
+                for _ in paths:
+                    on_frame_warped()
             composed, entry.composed = entry.composed, None
             result = finish_negative(composed, reference_bounds)
             del composed
@@ -2798,7 +3276,8 @@ def _composite_and_publish(
                     film_kind=film_kind,
                 ),
             )
-        progress.advance(source_index, PipelineStep.BLEND)
+        if not entry.compose_progress_spent:
+            progress.advance(source_index, PipelineStep.BLEND)
         progress.advance(source_index, PipelineStep.NORMALIZE)
         cancel.raise_if_cancelled()
 
@@ -3047,56 +3526,11 @@ def _composite_and_publish(
 
         height, width = result.image.shape[0], result.image.shape[1]
 
-        # Scratch detection on colour rolls.  Runs at stitch time on the
-        # published representation; the result is recorded as an ordinary
-        # edit op.  Failure never fails the stitch.
-        seeded_scratches: dict | None = None
-        if film_kind is FilmKind.COLOUR:
-            try:
-                spans = tuple(
-                    record.normalization["ceils"][ch]
-                    - record.normalization["floors"][ch]
-                    for ch in range(3)
-                )
-                film_extent = record.normalization.get("film_extent")
-                analysis_rect = record.normalization.get("analysis_rect")
-                candidates = scratches.detect(
-                    result.image, spans, film_extent, analysis_rect
-                )
-                fits = [scratches.fit(result.image, c) for c in candidates]
-                # Carry forward the previous enabled state when it exists,
-                # defaulting to True for a fresh detection.
-                prev = repo.net_edit_state(out_dir, record.negative_id).scratches
-                enabled = prev["enabled"] if prev and "enabled" in prev else True
-                params = scratches.scratches_params(
-                    canvas=(width, height),
-                    fits=fits,
-                    enabled=enabled,
-                )
-                repo.append_scratches_edit(out_dir, record.negative_id, params)
-                seeded_scratches = params
-            except Exception:  # noqa: BLE001
-                # Detection failure must never fail the stitch.
-                emit(
-                    WarningEvent(
-                        run_id=run_id,
-                        code=Code.SCRATCH_DETECTION_FAILED,
-                        message=(
-                            f"{record.negative_id}: scratch detection "
-                            "failed; the negative was published without "
-                            "scratch removal"
-                        ),
-                    )
-                )
-
-        # Band-removal regions the user drew on an earlier stitch are refitted
-        # onto this canvas (docs/DEBAND_PLAN.md §5.1).  Never fails the stitch.
-        if film_kind is FilmKind.COLOUR:
-            _refit_deband(out_dir, record, result.image, seeded_scratches, run_id, emit)
-
-        del result
-
         cancel.raise_if_cancelled()
+        image = result.image
+        # The rest of the composite (the meters, the extrema) is no longer
+        # needed; the image stays for the tail.
+        del result
 
         dest = out_dir / record.expected_output
         staged_path.replace(dest)
@@ -3120,93 +3554,199 @@ def _composite_and_publish(
         # "a run that fails before publishing anything leaves the roll
         # ATTACHED" is automatic because of it: a run that fails mid-way
         # has published nothing, so `locked_at` stays null.
-        locked_fields: list[str] = []
-        if roll.film_base is not None and roll.film_base.get("locked_at") is None:
-            roll.film_base["locked_at"] = _now_iso()
-            locked_fields.append("film_base")
-        if roll.flat_field is not None and roll.flat_field.get("locked_at") is None:
-            roll.flat_field["locked_at"] = _now_iso()
-            locked_fields.append("flat_field")
-        _persist(
-            out_dir,
-            roll,
-            records=[record],
-            removed=[old.negative_id for old in entry.covered_to_remove],
-            roll_fields=locked_fields,
-        )
-
-        # The seeding happens last: the negative row exists (the earlier
-        # `running` manifest write merged it), the ops log entry lands
-        # before `sync_previews` renders the net transform, and the
-        # `edit_recorded` event is deferred until the preview path exists.
-        auto_edit_fields_list: list[dict] = []
-        if auto_rotation_deg is not None:
-            entry.auto_rotation_deg = auto_rotation_deg
-            edit = repo.append_edit(
+        #
+        # The references are *verified* inside the transaction, against the
+        # fresh roll, never copied from the working copy: if they are no
+        # longer what this negative was normalized against, the whole
+        # transaction rolls back (`FILM_BASE_CHANGED`) and the caller records
+        # the negative as failed in a separate write.
+        expected_references = _reference_identity(roll)
+        stamp = _now_iso()
+        try:
+            committed, _ = _persist(
                 out_dir,
-                record.negative_id,
-                repo.ROTATE_FINE_OP,
-                {"angle_deg": auto_rotation_deg, "source": "auto"},
+                roll,
+                records=[record],
+                removed=[old.negative_id for old in entry.covered_to_remove],
+                finish=lambda fresh: _lock_references(
+                    fresh, expected_references, stamp
+                ),
             )
-            auto_edit_fields_list.append(_auto_edit_fields(out_dir, record, edit))
+        except StitchError:
+            # The TIFF is in place, but the record that would own it never
+            # committed. Leave no stray file behind for a negative that is
+            # new this run; the failure record is written by the caller.
+            if is_new:
+                dest.unlink(missing_ok=True)
+                record.output = None
+            raise
+        # Keep the working copy's lock stamps in step with the roll's.
+        for name in ("film_base", "flat_field"):
+            working_block = getattr(roll, name)
+            committed_block = getattr(committed, name)
+            if working_block is not None and committed_block is not None:
+                working_block["locked_at"] = committed_block.get("locked_at")
 
-        # The crop is seeded after the rotation it was measured under.
-        if crop_seed is not None and isinstance(
-            crop_outcome, auto_crop_module.AutoCrop
-        ):
-            tiff_size = (height, width)
-            tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
-                crop_outcome.rect,
-                tiff_size,
-                tilt_deg=0.0,
-                quarter_turns=0,
-                flipped_horizontally=crop_flipped,
-                fine_angle_deg=crop_fine_angle,
-                crop_params=None,
-                full_frame=True,
-            )
-            tx = min(max(tx, 0), width - 1)
-            ty = min(max(ty, 0), height - 1)
-            tw = min(tw, width - tx)
-            th = min(th, height - ty)
-            crop_params = repo.validated_crop_params(
-                {
-                    "canvas": [width, height],
-                    "x": tx,
-                    "y": ty,
-                    "w": tw,
-                    "h": th,
-                    "tilt_deg": tilt,
-                    "preset": crop_seed.preset,
-                    "source": "auto",
-                }
-            )
-            # An adopted negative whose live crop already is this window
-            # keeps its op: a re-stitch that changed nothing adds nothing.
-            existing = repo.net_edit_state(out_dir, record.negative_id).crop
-            if not (
-                crop_seed.adopted
-                and previews.crop_is_live(existing, tiff_size)
-                and existing == crop_params
-            ):
-                crop_edit = repo.append_edit(
-                    out_dir, record.negative_id, repo.CROP_OP, crop_params
-                )
-                auto_edit_fields_list.append(
-                    _auto_edit_fields(out_dir, record, crop_edit)
-                )
+        # Removed here, before the caller releases the publish lock: left
+        # behind, the staging directory of this run would be unrelated
+        # content to the next commit's plan. (The `finally` below is only a
+        # safety net for the paths that never got this far.)
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
-        emit(
-            NegativeDone(
-                run_id=run_id,
-                negative_id=record.negative_id,
-                output=record.expected_output,
-                width=width,
-                height=height,
-                global_rms_px=layout.global_rms_px,
-                max_overlap_mad=worst,
-            )
+        return _PublishedNegative(
+            entry=entry,
+            record=record,
+            image=image,
+            width=width,
+            height=height,
+            worst_overlap_mad=worst,
+            auto_rotation_deg=auto_rotation_deg,
+            crop_seed=crop_seed,
+            crop_outcome=crop_outcome,
+            crop_flipped=crop_flipped,
+            crop_fine_angle=crop_fine_angle,
         )
-        return auto_edit_fields_list
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _finish_published(
+    pub: _PublishedNegative,
+    *,
+    out_dir: Path,
+    film_kind: FilmKind,
+    run_id: str,
+    emit: EmitFn,
+) -> list[dict]:
+    """A published negative's order-independent tail: scratch detection,
+    the deband refit, the rotate and crop seeds, and `negative_done`. Each
+    write is its own transaction against fresh state, so none of it needs the
+    publish lock. Frees the image when it returns.
+
+    Returns the `edit_recorded` field sets to emit, one per seeded op (each
+    built from the net state after that op, minus the preview path, which
+    `sync_previews` fills in later); empty when nothing was seeded."""
+    entry = pub.entry
+    record = pub.record
+    image = pub.image
+    width, height = pub.width, pub.height
+
+    # Scratch detection on colour rolls.  Runs at stitch time on the
+    # published representation; the result is recorded as an ordinary
+    # edit op.  Failure never fails the stitch.
+    seeded_scratches: dict | None = None
+    if film_kind is FilmKind.COLOUR:
+        try:
+            spans = tuple(
+                record.normalization["ceils"][ch] - record.normalization["floors"][ch]
+                for ch in range(3)
+            )
+            film_extent = record.normalization.get("film_extent")
+            analysis_rect = record.normalization.get("analysis_rect")
+            candidates = scratches.detect(image, spans, film_extent, analysis_rect)
+            fits = [scratches.fit(image, c) for c in candidates]
+            # Carry forward the previous enabled state when it exists,
+            # defaulting to True for a fresh detection.
+            prev = repo.net_edit_state(out_dir, record.negative_id).scratches
+            enabled = prev["enabled"] if prev and "enabled" in prev else True
+            params = scratches.scratches_params(
+                canvas=(width, height),
+                fits=fits,
+                enabled=enabled,
+            )
+            repo.append_scratches_edit(out_dir, record.negative_id, params)
+            seeded_scratches = params
+        except Exception:  # noqa: BLE001
+            # Detection failure must never fail the stitch.
+            emit(
+                WarningEvent(
+                    run_id=run_id,
+                    code=Code.SCRATCH_DETECTION_FAILED,
+                    message=(
+                        f"{record.negative_id}: scratch detection "
+                        "failed; the negative was published without "
+                        "scratch removal"
+                    ),
+                )
+            )
+
+    # Band-removal regions the user drew on an earlier stitch are refitted
+    # onto this canvas (docs/DEBAND_PLAN.md §5.1).  Never fails the stitch.
+    if film_kind is FilmKind.COLOUR:
+        _refit_deband(out_dir, record, image, seeded_scratches, run_id, emit)
+
+    pub.image = None  # type: ignore[assignment]
+    del image
+
+    # The seeding happens last: the negative row exists (the earlier
+    # `running` manifest write merged it), the ops log entry lands
+    # before `sync_previews` renders the net transform, and the
+    # `edit_recorded` event is deferred until the preview path exists.
+    auto_edit_fields_list: list[dict] = []
+    if pub.auto_rotation_deg is not None:
+        entry.auto_rotation_deg = pub.auto_rotation_deg
+        edit = repo.append_edit(
+            out_dir,
+            record.negative_id,
+            repo.ROTATE_FINE_OP,
+            {"angle_deg": pub.auto_rotation_deg, "source": "auto"},
+        )
+        auto_edit_fields_list.append(_auto_edit_fields(out_dir, record, edit))
+
+    # The crop is seeded after the rotation it was measured under.
+    crop_seed = pub.crop_seed
+    if crop_seed is not None and isinstance(
+        pub.crop_outcome, auto_crop_module.AutoCrop
+    ):
+        tiff_size = (height, width)
+        tx, ty, tw, th, tilt = previews.display_crop_window_to_tiff(
+            pub.crop_outcome.rect,
+            tiff_size,
+            tilt_deg=0.0,
+            quarter_turns=0,
+            flipped_horizontally=pub.crop_flipped,
+            fine_angle_deg=pub.crop_fine_angle,
+            crop_params=None,
+            full_frame=True,
+        )
+        tx = min(max(tx, 0), width - 1)
+        ty = min(max(ty, 0), height - 1)
+        tw = min(tw, width - tx)
+        th = min(th, height - ty)
+        crop_params = repo.validated_crop_params(
+            {
+                "canvas": [width, height],
+                "x": tx,
+                "y": ty,
+                "w": tw,
+                "h": th,
+                "tilt_deg": tilt,
+                "preset": crop_seed.preset,
+                "source": "auto",
+            }
+        )
+        # An adopted negative whose live crop already is this window
+        # keeps its op: a re-stitch that changed nothing adds nothing.
+        existing = repo.net_edit_state(out_dir, record.negative_id).crop
+        if not (
+            crop_seed.adopted
+            and previews.crop_is_live(existing, tiff_size)
+            and existing == crop_params
+        ):
+            crop_edit = repo.append_edit(
+                out_dir, record.negative_id, repo.CROP_OP, crop_params
+            )
+            auto_edit_fields_list.append(_auto_edit_fields(out_dir, record, crop_edit))
+
+    emit(
+        NegativeDone(
+            run_id=run_id,
+            negative_id=record.negative_id,
+            output=record.expected_output,
+            width=width,
+            height=height,
+            global_rms_px=entry.layout.global_rms_px,
+            max_overlap_mad=pub.worst_overlap_mad,
+        )
+    )
+    return auto_edit_fields_list

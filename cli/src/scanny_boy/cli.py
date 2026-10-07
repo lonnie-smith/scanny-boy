@@ -1032,6 +1032,7 @@ def _run_stitch_command(
     from scanny_boy.registration import StitchError
     from scanny_boy.roll_lock import (
         RollBusyError,
+        exclusive_publish_lock,
         exclusive_roll_lock,
         shared_roll_lock,
     )
@@ -1050,7 +1051,24 @@ def _run_stitch_command(
     # `--compose-only` writes only into the work folder and reads the roll
     # as a snapshot, so it holds the roll lock shared; it still cannot
     # overlap a stitch that holds it exclusively.
-    roll_lock = shared_roll_lock if args.compose_only else exclusive_roll_lock
+    #
+    # A deferred stitch of whole work folders (the capture queue's commit)
+    # is a *parallel commit*: it too holds the roll lock shared for its
+    # lifetime, so several of one roll's stitches can run at once while
+    # every exclusive writer is still kept out, and it takes the per-roll
+    # publish lock exclusively for its publish section only
+    # (docs/PARALLEL_STITCH_PLAN.md §3.4). A stitch that recomputes the
+    # roll-wide highlight lock (no `--defer-roll-refresh`) or re-stitches
+    # named negatives keeps the exclusive roll lock and needs no publish
+    # lock (`publish_lock=None`: the whole run is its publish section).
+    parallel_commit = (
+        args.defer_roll_refresh and not args.negatives and not args.compose_only
+    )
+    roll_lock = (
+        shared_roll_lock
+        if args.compose_only or parallel_commit
+        else exclusive_roll_lock
+    )
     try:
         with (
             command_cancellation(cancel) as scope,
@@ -1082,12 +1100,20 @@ def _run_stitch_command(
                     auto_rotate=args.auto_rotate,
                     auto_crop=args.auto_crop,
                     defer_roll_refresh=args.defer_roll_refresh,
+                    publish_lock=(
+                        (lambda: exclusive_publish_lock(Path(args.roll)))
+                        if parallel_commit
+                        else None
+                    ),
                 )
     except StitchError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
         writer.write(Finished(run_id=run_id, status="failed", exit_status=1))
         return 1
     except RollBusyError as exc:
+        # Raised before the roll is touched: the publish lock is taken ahead
+        # of the run's first write, so a busy publish lock mid-run (after
+        # `started` and some progress) still records nothing in the roll.
         return _fail_roll_busy(writer, exc, run_id=run_id)
     except repo.RollNotRegisteredError as exc:
         writer.write(ErrorEvent(run_id=run_id, code=exc.code, message=exc.message))
@@ -2430,11 +2456,18 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
 
 def _run_export_command(args, writer: EventWriter) -> int:
     from scanny_boy.exporter import ExportFailure, parse_downsample, run_export
-    from scanny_boy.roll_lock import RollBusyError, shared_roll_lock
+    from scanny_boy.roll_lock import (
+        RollBusyError,
+        shared_publish_lock,
+        shared_roll_lock,
+    )
 
     writer.write(Started(command="export"))
     try:
-        with shared_roll_lock(Path(args.roll)):
+        # The publish lock too, shared: a parallel commit's publish section
+        # replaces and adopts TIFFs while it holds the roll lock only
+        # shared, so the roll lock alone would not keep it off an export.
+        with shared_roll_lock(Path(args.roll)), shared_publish_lock(Path(args.roll)):
             outcome = run_export(
                 Path(args.roll),
                 Path(args.output),

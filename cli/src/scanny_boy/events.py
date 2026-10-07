@@ -385,8 +385,10 @@ class NegativeComposed(Event):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class NegativePublished(Event):
-    """A negative's TIFF and record are published and the publish lock is
-    released. Defined now, emitted only from PS-3 (the publish section)."""
+    """A negative's TIFF and record are published and, for a parallel commit,
+    the publish lock is released: the caller may start the roll's next
+    commit. Emitted before the negative's post-publish tail (`negative_done`
+    follows it)."""
 
     event_type: ClassVar[EventType] = EventType.NEGATIVE_PUBLISHED
 
