@@ -14,7 +14,8 @@ completed negative's published output is neither a conflict needing
 consent nor a stale output — no roll content is ever re-rendered or
 replaced in place. Only the conflict classification changes: an unrelated
 nonempty folder is still rejected, and never-finished negatives still get
-recovery cleanup.
+recovery cleanup. A roll's staging directories are cleaned whichever of its
+runs left them (see `_plan_rerun`).
 """
 
 from __future__ import annotations
@@ -204,12 +205,31 @@ def _plan_rerun(
     existing = rules.load(output_dir)
 
     run_id = rules.run_id_of(existing)
+    # Under ROLL_RULES a staging directory may belong to any run the roll
+    # has recorded, not only the last: a stitch that was killed between its
+    # publish transaction and removing its staging directory leaves one
+    # behind, and by the time the next stitch plans, further runs have been
+    # appended (docs/PARALLEL_STITCH_PLAN.md §6). Every such directory is
+    # known content, and every one is reported stale below.
+    #
+    # That is safe only because planning happens while no other publish
+    # section can be running: the caller holds either the roll lock
+    # exclusively or, for a parallel commit, the publish lock. A staging
+    # directory found at that moment is therefore a leftover, never another
+    # stitch's work in flight. Do not call this for a roll without one of
+    # those locks held.
+    staging_run_ids = (
+        {run.run_id for run in existing.runs} if rules is ROLL_RULES else {run_id}
+    )
     known_names = {name for name in (rules.manifest_filename,) if name}
     known_names.update(rules.all_expected_outputs_of(existing))
+    stale_staging: list[Path] = []
     for entry in entries:
         if entry.name in known_names:
             continue
-        if _is_staging_dir_for_run(entry, run_id):
+        if any(_is_staging_dir_for_run(entry, rid) for rid in staging_run_ids):
+            if rules is ROLL_RULES:
+                stale_staging.append(entry)
             continue
         raise OutputFolderError(
             Code.OUTPUT_NOT_EMPTY,
@@ -220,7 +240,6 @@ def _plan_rerun(
 
     conflicting: list[str] = []
     stale: list[str] = []
-    stale_staging: list[Path] = []
     for unit in rules.units_of(existing):
         unit_dir = staging_dir_path(output_dir, run_id, unit.unit_id)
         if unit.is_completed:
@@ -239,7 +258,7 @@ def _plan_rerun(
             stale.extend(
                 name for name in unit.expected_outputs if (output_dir / name).exists()
             )
-            if unit_dir.exists():
+            if unit_dir.exists() and unit_dir not in stale_staging:
                 stale_staging.append(unit_dir)
 
     return RerunPlan(existing, conflicting, stale, stale_staging)

@@ -256,6 +256,64 @@ def test_roll_folder_with_prior_outputs_is_valid(work_dir, tmp_path):
     ]
 
 
+def test_roll_staging_dirs_of_every_run_are_known_and_stale(work_dir, tmp_path):
+    """Under `ROLL_RULES` a staging directory left by *any* run the roll
+    records is known content and is reported stale (cleaned), not refused.
+    A stitch killed between its publish transaction and removing its staging
+    directory leaves one, and further runs are appended before the next
+    plan. Planning is safe against a live stitch only because the caller
+    holds the roll or publish lock."""
+    out_dir = make_roll_dir(tmp_path)
+    run_stitch_with_defaults(work_dir, out_dir, run_id="first0")
+    run_stitch_with_defaults(work_dir, out_dir, run_id="second")
+    manifest = load_roll_manifest(out_dir)
+    assert [r.run_id for r in manifest.runs] == ["first0", "second"]
+    [negative] = manifest.negatives
+    assert negative.status == "completed"
+
+    # The first run's negative is completed, yet its leftover staging
+    # directory is still stale; so is the last run's.
+    first = staging_dir_path(out_dir, "first0", negative.negative_id)
+    last = staging_dir_path(out_dir, "second", "negative-x")
+    for staging in (first, last):
+        staging.mkdir()
+        (staging / "partial.tif").write_bytes(b"partial")
+
+    plan = plan_rerun(out_dir, _candidate_from(manifest), rules=ROLL_RULES)
+
+    assert sorted(plan.stale_staging_dirs) == sorted([first, last])
+    assert plan.stale_outputs == []
+    assert plan.conflicting_outputs == []
+
+    apply_recovery_cleanup(out_dir, plan)
+
+    assert not first.exists() and not last.exists()
+    assert (out_dir / negative.expected_output).exists()
+
+
+def test_roll_staging_dir_of_an_unknown_run_is_still_unrelated_content(
+    work_dir, tmp_path
+):
+    out_dir = make_roll_dir(tmp_path)
+    run_stitch_with_defaults(work_dir, out_dir, run_id="first0")
+    manifest = load_roll_manifest(out_dir)
+    staging_dir_path(out_dir, "stranger", "negative-x").mkdir()
+
+    with pytest.raises(OutputFolderError) as excinfo:
+        plan_rerun(out_dir, _candidate_from(manifest), rules=ROLL_RULES)
+    assert excinfo.value.code.value == "OUTPUT_NOT_EMPTY"
+
+
+def test_prepare_rules_still_know_only_the_current_runs_staging_dirs(tmp_path):
+    existing = _manifest(run_id="run-1")
+    write_manifest(tmp_path, existing)
+    staging_dir_path(tmp_path, "run-0", "negative-01").mkdir()
+
+    with pytest.raises(OutputFolderError) as excinfo:
+        plan_rerun(tmp_path, _manifest(run_id="run-1"))
+    assert excinfo.value.code.value == "OUTPUT_NOT_EMPTY"
+
+
 # --- plan_rerun_preview (probe --out, before a film date is known) --------
 
 
