@@ -86,6 +86,7 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .versionToolbarItem()
         .onChange(of: selection, initial: true) { _, _ in resolveSelectedRoll() }
         // `selection` can be set (from `NewRollSheet`'s just-created roll)
         // before `library.rolls` has re-scanned to include it — this catches

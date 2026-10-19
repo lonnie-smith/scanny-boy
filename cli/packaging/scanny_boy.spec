@@ -130,8 +130,8 @@ app = BUNDLE(  # noqa: F821
         "CFBundleDisplayName": "Scanny Boy CLI",
         "CFBundleExecutable": "scanny-boy",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleVersion": "0.3.0",
         "NSHighResolutionCapable": True,
     },
 )

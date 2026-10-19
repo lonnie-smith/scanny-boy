@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Builds a Release ScannyBoy.app and installs it into /Applications.
 #
-#   ./scripts/install-mac.sh                 # install to /Applications
-#   ./scripts/install-mac.sh ~/Applications  # install somewhere else
+#   ./scripts/install-mac.sh patch|minor|major
+#
+# The one required argument says which part of the version to increment. The
+# new version is written to cli/pyproject.toml, cli/packaging/scanny_boy.spec
+# and mac/project.yml before the build, so the app, its CLI helper and the
+# toolbar label all agree. Set INSTALL_DIR to install somewhere other than
+# /Applications (for example INSTALL_DIR=~/Applications).
 #
 # Set SIGN_IDENTITY to re-sign the installed app with a stable identity (for
 # example "Apple Development: Name (TEAMID)"). Ad-hoc signatures change on
@@ -14,10 +19,42 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST_DIR="${1:-/Applications}"
+DEST_DIR="${INSTALL_DIR:-/Applications}"
 BUILD_DIR="$ROOT_DIR/mac/build"
 BUILT_APP="$BUILD_DIR/Build/Products/Release/ScannyBoy.app"
 DEST_APP="$DEST_DIR/ScannyBoy.app"
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 major|minor|patch" >&2
+  exit 2
+fi
+BUMP="$1"
+
+PYPROJECT="$ROOT_DIR/cli/pyproject.toml"
+SPEC="$ROOT_DIR/cli/packaging/scanny_boy.spec"
+PROJECT_YML="$ROOT_DIR/mac/project.yml"
+
+CURRENT="$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)"$/\1/p' "$PYPROJECT" | head -n 1)"
+if [[ -z "$CURRENT" ]]; then
+  echo "error: no x.y.z version found in $PYPROJECT" >&2
+  exit 1
+fi
+IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
+case "$BUMP" in
+  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+  patch) PATCH=$((PATCH + 1)) ;;
+  *)
+    echo "usage: $0 major|minor|patch" >&2
+    exit 2
+    ;;
+esac
+NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+
+echo "Version: $CURRENT -> $NEW_VERSION"
+sed -i '' "s/^version = \"$CURRENT\"$/version = \"$NEW_VERSION\"/" "$PYPROJECT"
+sed -E -i '' "s/(\"CFBundle(Short)?Version(String)?\": )\"[0-9.]+\"/\1\"$NEW_VERSION\"/" "$SPEC"
+sed -E -i '' "s/(CFBundle(Short)?Version(String)?: )\"[0-9.]+\"/\1\"$NEW_VERSION\"/" "$PROJECT_YML"
 
 "$ROOT_DIR/scripts/build-cli.sh"
 
