@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Builds a Release ScannyBoy.app and installs it into /Applications.
+# Builds a Release ScannyBoy.app and installs it into ~/Applications.
 #
 #   ./scripts/install-mac.sh patch|minor|major
 #
 # The one required argument says which part of the version to increment. The
 # new version is written to cli/pyproject.toml, cli/packaging/scanny_boy.spec
 # and mac/project.yml before the build, so the app, its CLI helper and the
-# toolbar label all agree. Set INSTALL_DIR to install somewhere other than
-# /Applications (for example INSTALL_DIR=~/Applications).
+# toolbar label all agree. The app is always installed into ~/Applications, and
+# any previously installed copy there is removed first. After a successful
+# install the version bump is committed and tagged vX.Y.Z (only the three
+# version files are committed; other working-tree changes are left alone).
 #
 # Set SIGN_IDENTITY to re-sign the installed app with a stable identity (for
 # example "Apple Development: Name (TEAMID)"). Ad-hoc signatures change on
@@ -19,7 +21,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST_DIR="${INSTALL_DIR:-/Applications}"
+DEST_DIR="$HOME/Applications"
 BUILD_DIR="$ROOT_DIR/mac/build"
 BUILT_APP="$BUILD_DIR/Build/Products/Release/ScannyBoy.app"
 DEST_APP="$DEST_DIR/ScannyBoy.app"
@@ -50,6 +52,12 @@ case "$BUMP" in
     ;;
 esac
 NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+
+TAG="v$NEW_VERSION"
+if git -C "$ROOT_DIR" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "error: git tag $TAG already exists" >&2
+  exit 1
+fi
 
 echo "Version: $CURRENT -> $NEW_VERSION"
 sed -i '' "s/^version = \"$CURRENT\"$/version = \"$NEW_VERSION\"/" "$PYPROJECT"
@@ -107,7 +115,11 @@ if pgrep -x ScannyBoy >/dev/null; then
 fi
 
 mkdir -p "$DEST_DIR"
-rm -rf "$DEST_APP"
+# Remove the previously installed version so nothing from it survives.
+if [[ -e "$DEST_APP" ]]; then
+  echo "Removing previous install: $DEST_APP"
+  rm -rf "$DEST_APP"
+fi
 # ditto keeps the bundle's signature, symlinks and extended attributes intact.
 ditto "$BUILT_APP" "$DEST_APP"
 
@@ -116,3 +128,10 @@ codesign --verify --deep --strict "$DEST_APP"
 echo
 echo "Installed $DEST_APP"
 echo "Launch it from Finder, Spotlight, or: open -a \"$DEST_APP\""
+
+# Record the release: commit the version bump so the tag points at sources
+# that actually carry this version, then tag it.
+git -C "$ROOT_DIR" add -- "$PYPROJECT" "$SPEC" "$PROJECT_YML"
+git -C "$ROOT_DIR" commit -m "Release $TAG" -- "$PYPROJECT" "$SPEC" "$PROJECT_YML"
+git -C "$ROOT_DIR" tag -a "$TAG" -m "ScannyBoy $NEW_VERSION"
+echo "Tagged $TAG (not pushed; run: git push origin $TAG)"
