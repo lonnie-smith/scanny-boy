@@ -9,7 +9,7 @@ struct FocusCheckCell: Sendable, Hashable, Identifiable {
     let percentage: Double?
 }
 
-/// Live view loop, focus meter, and check shot for the Capture tab.
+/// Live view loop, focus meter, and check shot for the Capture sheet.
 @MainActor
 @Observable
 final class FocusAssistModel {

@@ -1,10 +1,15 @@
 """Engine construction and schema migrations for the library database.
 
 The database is one SQLite file at
-`~/Library/Application Support/ScannyBoy/library.db`. `SCANNY_BOY_LIBRARY_DB`
-overrides the location — the same Debug-only escape hatch pattern as
-`SCANNY_BOY_CLI`, and how the test suite points every command at a
-per-test database.
+`~/Library/Application Support/ScannyBoy/library.db` in the packaged
+(PyInstaller) helper, which is what the installed app runs. Anything else —
+`uv run scanny-boy` from a checkout, a script, an un-frozen test — defaults
+to `~/Library/Application Support/ScannyBoy-Dev/library.db` instead, so
+development work can never open the real library by forgetting to set
+anything. `SCANNY_BOY_LIBRARY_DB` overrides the location outright — the same
+Debug-only escape hatch pattern as `SCANNY_BOY_CLI`, how the test suite
+points every command at a per-test database, and how the macOS app hands its
+helper the profile-specific path (`AppEnvironment.swift`).
 
 Migrations are Alembic revisions under `library/migrations/`, applied
 programmatically on every engine open (`upgrade head` is a no-op once
@@ -61,11 +66,29 @@ class LibraryDBError(Exception):
         self.message = message
 
 
+PRODUCTION_SUPPORT_DIR_NAME = "ScannyBoy"
+DEVELOPMENT_SUPPORT_DIR_NAME = "ScannyBoy-Dev"
+
+
+def default_support_dir_name() -> str:
+    """The Application Support folder name used when nothing overrides the
+    library path: production data only for the packaged helper."""
+    if getattr(sys, "frozen", False):
+        return PRODUCTION_SUPPORT_DIR_NAME
+    return DEVELOPMENT_SUPPORT_DIR_NAME
+
+
 def library_db_path() -> Path:
     override = os.environ.get("SCANNY_BOY_LIBRARY_DB")
     if override:
         return Path(override)
-    return Path.home() / "Library" / "Application Support" / "ScannyBoy" / "library.db"
+    return (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / default_support_dir_name()
+        / "library.db"
+    )
 
 
 def _script_location() -> Path:

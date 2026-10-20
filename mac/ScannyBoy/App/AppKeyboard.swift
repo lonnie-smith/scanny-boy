@@ -4,10 +4,9 @@ import Observation
 import SwiftUI
 
 /// Which workspace tab is active — mirrored from `ContentView`'s picker so
-/// menu commands can enable and disable themselves.
+/// menu commands can enable and disable themselves. Tethered capture and Add
+/// Scans are not tabs: they are File-menu sheets (`RollIntakeSheet`).
 enum AppWorkspaceTab: Equatable {
-    case capture
-    case addScans
     case edit
     case metadata
     case export
@@ -19,8 +18,16 @@ enum AppWorkspaceTab: Equatable {
 @MainActor
 @Observable
 final class AppKeyboardState {
-    var workspaceTab: AppWorkspaceTab = .capture
+    var workspaceTab: AppWorkspaceTab = .edit
     var isBusy = false
+    /// The roll-intake sheet on screen, if any. While one is up, the
+    /// workspace tabs behind it take no shortcuts; only Add Scans' catalogue
+    /// answers Select All / Deselect All.
+    var intake: RollIntakeKind?
+    /// Mirrored from `ContentView`: the sidebar selection names a roll the
+    /// library has loaded, so File > Tethered Capture… and Add Scans… have
+    /// something to add to.
+    var hasSelectedRoll = false
 
     /// Set by the Edit tab's preview pane while it is mounted.
     var previewHasOutput = false
@@ -37,17 +44,24 @@ final class AppKeyboardState {
     /// toggles its own `@State` zoom model in a live SwiftUI context.
     private(set) var zoomToggleRequest = 0
 
+    /// The workspace tabs are frontmost: no intake sheet covers them.
+    private var workspaceIsFrontmost: Bool { intake == nil }
+
+    var canOpenIntake: Bool {
+        hasSelectedRoll && workspaceIsFrontmost && !isBusy
+    }
+
     var canSelectAll: Bool {
-        !isBusy
-            && (workspaceTab == .addScans
-                || workspaceTab == .edit
-                || workspaceTab == .metadata)
+        guard !isBusy else { return false }
+        if let intake { return intake == .addScans }
+        return workspaceTab == .edit || workspaceTab == .metadata
     }
 
     var canDeselectAll: Bool { canSelectAll }
 
     var canRotate: Bool {
         workspaceTab == .edit
+            && workspaceIsFrontmost
             && !isBusy
             && previewHasOutput
             && !previewOperationsBlocked
@@ -55,6 +69,7 @@ final class AppKeyboardState {
 
     var canCrop: Bool {
         workspaceTab == .edit
+            && workspaceIsFrontmost
             && !isBusy
             && previewHasOutput
             && previewPaneMounted
@@ -63,6 +78,7 @@ final class AppKeyboardState {
 
     var canZoom: Bool {
         workspaceTab == .edit
+            && workspaceIsFrontmost
             && !isBusy
             && previewHasOutput
             && !previewOperationsBlocked
@@ -70,7 +86,7 @@ final class AppKeyboardState {
     }
 
     var canNavigate: Bool {
-        (workspaceTab == .edit || workspaceTab == .metadata) && !isBusy
+        (workspaceTab == .edit || workspaceTab == .metadata) && workspaceIsFrontmost && !isBusy
     }
 
     func performToggleZoom() {

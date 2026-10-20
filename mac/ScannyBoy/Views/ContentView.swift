@@ -1,23 +1,17 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// A `NavigationSplitView` shell — the library sidebar
-/// (`RollSidebar`) plus a detail workspace with an Add Scans/Edit tab
-/// picker. The workspace's Add Scans tab is built on the selected roll: no
-/// output-folder picker, no film date, and the overwrite-confirmation
-/// dialog replaced by the overlap sheet. The Edit tab holds
-/// negatives, thumbnails, the dirty count, and Apply.
+/// (`RollSidebar`) plus a detail workspace with an Edit/Metadata/Export tab
+/// picker. The Edit tab holds negatives, thumbnails, the dirty count, and
+/// Apply.
 ///
-/// Scans-per-negative is no longer a roll property at all: it is each
-/// stitch batch's own choice, selected on the Add Scans stage and required
-/// before the Stitch button enables — so one roll can hold negatives
-/// stitched from different scan counts.
+/// Negatives come in through `RollIntakeSheet` — Tethered Capture or Add
+/// Scans — opened from the File menu, or from `NewRollSheet` right after
+/// creating a roll. Either sheet is pinned to the roll selected when it
+/// opened; being modal, it keeps the sidebar on that roll until it closes.
 ///
-/// Add Scans covers folder selection, one-range selection, and the grouping
-/// preview. Run adds live progress, cooperative Cancel, the
-/// completed/failed negatives, Reveal in Finder, and the manifest the run
-/// left behind. Re-stitch is the same `run` driving
+/// Re-stitch is the same `run` driving
 /// `scanny-boy stitch` over a work directory you point at instead of
 /// `scanny-boy run` over a fresh selection.
 struct ContentView: View {
@@ -37,17 +31,18 @@ struct ContentView: View {
     @Bindable var keyboard: AppKeyboardState
 
     @State private var selection: Roll.ID?
-    @State private var workspaceTab: AppWorkspaceTab = .capture
+    @State private var workspaceTab: AppWorkspaceTab = .edit
+    /// The Tethered Capture or Add Scans sheet on screen, if any.
+    @State private var presentedIntake: RollIntake?
+    /// Chosen in `NewRollSheet`; presented from its `onDismiss`, once that
+    /// sheet is gone, since a window shows one sheet at a time.
+    @State private var pendingIntakeAfterNewRoll: RollIntake?
     @State private var isPresentingRestitch = false
     @State private var restitchWorkDirectory: URL?
     @State private var restitchOutputFolder: URL?
     @State private var isPresentingNewRollSheet = false
     @State private var isPresentingFlatFieldProfiles = false
     @State private var isPresentingGridProfiles = false
-    @State private var isSelectingBaseFrameRegion = false
-    @State private var isConfirmingConvert = false
-    @State private var pendingConvertAfterNewRoll = false
-    @State private var isConvertDropTarget = false
     // Left explicit: `.automatic`'s default can collapse to no visible
     // columns at all before the window has a settled size, which leaves
     // both the sidebar and its toolbar absent from the view hierarchy.
@@ -108,12 +103,9 @@ struct ContentView: View {
         }
         .onChange(of: workspaceTab) { _, tab in
             keyboard.workspaceTab = tab
-            switch tab {
-            case .capture, .addScans:
-                columnVisibility = .all
-            case .edit, .metadata, .export:
-                columnVisibility = .detailOnly
-            }
+            // Every remaining tab wants the room; the sidebar comes back from
+            // the toolbar toggle.
+            columnVisibility = .detailOnly
             refreshRollIfPending()
         }
         .onChange(of: activity.isBusy) { _, isBusy in
@@ -122,11 +114,11 @@ struct ContentView: View {
         .onAppear(perform: installKeyboardState)
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoySelectAll)) { _ in
             guard keyboard.canSelectAll else { return }
+            if let intake = presentedIntake {
+                if intake.kind == .addScans { model.selectAll() }
+                return
+            }
             switch workspaceTab {
-            case .capture:
-                break
-            case .addScans:
-                model.selectAll()
             case .edit, .metadata:
                 edit.selectAll()
             case .export:
@@ -135,11 +127,11 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyDeselectAll)) { _ in
             guard keyboard.canDeselectAll else { return }
+            if let intake = presentedIntake {
+                if intake.kind == .addScans { model.deselectAll() }
+                return
+            }
             switch workspaceTab {
-            case .capture:
-                break
-            case .addScans:
-                model.deselectAll()
             case .edit, .metadata:
                 edit.deselectAll()
             case .export:
@@ -183,6 +175,7 @@ struct ContentView: View {
             edit.selectNext()
         }
         .onReceive(NotificationCenter.default.publisher(for: .scannyBoyRequestRestitch)) { _ in
+            guard presentedIntake == nil else { return }
             restitchWorkDirectory = nil
             restitchOutputFolder = model.rollURL
             isPresentingRestitch = true
@@ -190,12 +183,15 @@ struct ContentView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: .scannyBoyRequestFlatFieldProfiles)
         ) { _ in
+            // An open intake sheet answers this itself (`RollIntakeSheet`).
+            guard presentedIntake == nil else { return }
             rig.refresh()
             isPresentingFlatFieldProfiles = true
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .scannyBoyRequestGridProfiles)
         ) { _ in
+            guard presentedIntake == nil else { return }
             grid.refresh()
             isPresentingGridProfiles = true
         }
@@ -219,38 +215,14 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $isPresentingNewRollSheet, onDismiss: {
-            pendingConvertAfterNewRoll = false
+            guard let pending = pendingIntakeAfterNewRoll else { return }
+            pendingIntakeAfterNewRoll = nil
+            presentedIntake = pending
         }) {
-            NewRollSheet(library: library) { roll in
+            NewRollSheet(library: library) { roll, intake in
                 model.seedRememberedSetup(on: roll.path)
                 selection = roll.id
-                if pendingConvertAfterNewRoll {
-                    pendingConvertAfterNewRoll = false
-                    workspaceTab = .addScans
-                    startRun()
-                } else {
-                    workspaceTab = .capture
-                }
-            }
-        }
-        .confirmationDialog(
-            "Add scans to “\(selectedRoll?.displayName ?? "")”?",
-            isPresented: $isConfirmingConvert
-        ) {
-            if let roll = selectedRoll {
-                Button("Add to “\(roll.displayName)”") { startRun() }
-                Button("Create New Roll…") {
-                    pendingConvertAfterNewRoll = true
-                    isPresentingNewRollSheet = true
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if let count = selectedRoll?.negativeCount {
-                Text(
-                    "This roll already contains \(Pluralize.count(count, "negative")). "
-                        + "Add the new scans here, or create a new roll for them."
-                )
+                pendingIntakeAfterNewRoll = RollIntake(kind: intake, roll: roll)
             }
         }
         .sheet(isPresented: $isPresentingFlatFieldProfiles) {
@@ -259,6 +231,50 @@ struct ContentView: View {
         .sheet(isPresented: $isPresentingGridProfiles) {
             GridProfilesSheet(grid: grid)
         }
+        .modifier(intakePresentation)
+    }
+
+    /// Kept out of `body`'s own chain, which is at the type checker's limit.
+    private var intakePresentation: some ViewModifier {
+        RollIntakePresentation(
+            presentedIntake: $presentedIntake,
+            onRequest: openIntake,
+            onPresentedChange: { kind in
+                keyboard.intake = kind
+                if kind == nil { refreshRollIfPending() }
+            },
+            sheet: { intake in
+                RollIntakeSheet(
+                    intake: intake,
+                    library: library,
+                    rig: rig,
+                    grid: grid,
+                    model: model,
+                    capture: capture,
+                    stitchQueue: stitchQueue,
+                    edit: edit,
+                    run: run,
+                    activity: activity
+                )
+            }
+        )
+    }
+
+    /// File > Tethered Capture… / Add Scans…: pins the sheet to the roll
+    /// selected right now. Guarded here as well as by the menu items'
+    /// enablement, which SwiftUI can leave stale until the menu reopens.
+    private func openIntake(_ kind: RollIntakeKind) {
+        guard presentedIntake == nil,
+            !isPresentingNewRollSheet,
+            !isPresentingRestitch,
+            !isPresentingFlatFieldProfiles,
+            !isPresentingGridProfiles,
+            !activity.isBusy,
+            let roll = selectedRoll,
+            roll.status == .ok,
+            model.rollURL == roll.path
+        else { return }
+        presentedIntake = RollIntake(kind: kind, roll: roll)
     }
 
     private func syncGridProfileSelection(with profiles: [GridProfile]) {
@@ -274,8 +290,6 @@ struct ContentView: View {
     private var workspace: some View {
         VStack(spacing: 0) {
             Picker("Stage", selection: $workspaceTab) {
-                Text("Capture").tag(AppWorkspaceTab.capture)
-                Text("Add Scans").tag(AppWorkspaceTab.addScans)
                 Text("Edit").tag(AppWorkspaceTab.edit)
                 Text("Metadata").tag(AppWorkspaceTab.metadata)
                 Text("Export").tag(AppWorkspaceTab.export)
@@ -283,42 +297,48 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Stage")
-            .disabled(activity.isBusy && workspaceTab != .capture)
+            .disabled(activity.isBusy || presentedIntake != nil)
             .padding()
 
-            switch workspaceTab {
-            case .capture:
-                CaptureStageView(
-                    capture: capture,
-                    model: model,
-                    stitchQueue: stitchQueue,
-                    rig: rig,
-                    grid: grid,
-                    activity: activity
+            // Only one stage is ever mounted, as when capture and Add Scans
+            // were tabs: the Edit stage's previews must not render behind a
+            // capture sheet while its negatives stitch.
+            if let intake = presentedIntake {
+                ContentUnavailableView(
+                    intake.kind.title,
+                    systemImage: intake.kind.systemImage,
+                    description: Text("Adding negatives to “\(intake.roll.displayName)”.")
                 )
-            case .addScans:
-                addScansStage
-            case .edit:
-                EditStageView(
-                    edit: edit,
-                    run: run,
-                    activity: activity,
-                    keyboard: keyboard,
-                    onNegativeDeleted: { library.scan() }
-                )
-            case .metadata:
-                MetadataStageView(
-                    library: library,
-                    edit: edit,
-                    run: run,
-                    activity: activity
-                )
-            case .export:
-                ExportStageView(export: export, edit: edit, run: run, activity: activity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                stage
             }
         }
         .navigationTitle("Scanny Boy")
         .navigationSubtitle(selectedRollName)
+    }
+
+    @ViewBuilder
+    private var stage: some View {
+        switch workspaceTab {
+        case .edit:
+            EditStageView(
+                edit: edit,
+                run: run,
+                activity: activity,
+                keyboard: keyboard,
+                onNegativeDeleted: { library.scan() }
+            )
+        case .metadata:
+            MetadataStageView(
+                library: library,
+                edit: edit,
+                run: run,
+                activity: activity
+            )
+        case .export:
+            ExportStageView(export: export, edit: edit, run: run, activity: activity)
+        }
     }
 
     /// The selected roll's name for the window title bar — "Scanny Boy"
@@ -338,21 +358,6 @@ struct ContentView: View {
         capture.holdsRoll || activity.isBusy
     }
 
-    private var addScansStage: some View {
-        HSplitView {
-            catalogueColumn
-                .frame(minWidth: 280, idealWidth: 340, maxHeight: .infinity)
-            detailColumn
-                .frame(minWidth: 380, idealWidth: 460, maxHeight: .infinity)
-        }
-        // Without a full-height frame the split view sizes to the left
-        // column's content — a `List` when the catalogue is populated, but
-        // only the compact empty state otherwise — and the detail pane then
-        // vertically centers that short stack instead of pinning it to the top.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .disabled(activity.isBusy)
-    }
-
     /// Keeps `model.rollURL` and `edit.rollURL` following the sidebar
     /// selection: neither model has a folder picker of its
     /// own, so this is the only thing that ever sets them.
@@ -369,6 +374,7 @@ struct ContentView: View {
     private func installKeyboardState() {
         keyboard.workspaceTab = workspaceTab
         keyboard.isBusy = activity.isBusy
+        keyboard.intake = presentedIntake?.kind
         installCaptureHandlers()
         installRollDetailHandlers()
         wireCaptureToRoll()
@@ -435,7 +441,8 @@ struct ContentView: View {
     /// TETHER_PLAN §4.4: Edit and Export read the highlight lock, so opening
     /// either on a roll whose refresh was deferred runs it first.
     private func refreshRollIfPending() {
-        guard workspaceTab == .edit || workspaceTab == .export,
+        guard presentedIntake == nil,
+            workspaceTab == .edit || workspaceTab == .export,
             let rollURL = edit.rollURL,
             edit.roll?.refreshPending == true,
             !activity.isBusy
@@ -447,6 +454,7 @@ struct ContentView: View {
         let rollURL = library.rolls.first { $0.id == selection }?.path
         model.rollURL = rollURL
         edit.rollURL = rollURL
+        keyboard.hasSelectedRoll = selectedRoll?.status == .ok
         wireCaptureToRoll()
         if selection != nil, rollURL == nil, !library.isScanning {
             selection = nil
@@ -533,305 +541,6 @@ struct ContentView: View {
         )
     }
 
-    private var catalogueColumn: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Input folder").font(.headline)
-                Spacer()
-                Button("Choose…") { chooseInputFolder() }
-            }
-            if let inputFolder = model.inputFolder {
-                Text(inputFolder.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            if model.catalogue.isEmpty {
-                ContentUnavailableView(
-                    "No NEF Files",
-                    systemImage: "photo.on.rectangle.angled",
-                    description: Text("Choose a folder of .NEF files to begin.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(model.catalogue, id: \.self, selection: $model.selectedFiles) { name in
-                    CatalogueRow(
-                        name: name,
-                        url: model.fileURL(for: name),
-                        selectedFiles: model.selectedFiles
-                    )
-                }
-                .listStyle(.inset)
-            }
-
-            ForEach(model.catalogueWarnings, id: \.self) { warning in
-                IssueLabel(issue: warning, style: .warning)
-            }
-            if let error = model.catalogueError {
-                IssueLabel(issue: error, style: .error)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding()
-        // Nothing about the configuration may change while a conversion is
-        // using it.
-        .disabled(activity.isBusy)
-    }
-
-    private var detailColumn: some View {
-        Form {
-            // While a probe is in flight the Stitch button's enablement is
-            // not yet trustworthy — but the sections themselves stay
-            // mounted (M3): a drag-select across the catalogue used to tear
-            // the whole form down and rebuild it once per row, and the
-            // grouping picker was unreachable for the duration.
-            configurationSections
-                .disabled(activity.isBusy)
-            convertSection
-        }
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding()
-    }
-
-    @ViewBuilder
-    private var configurationSections: some View {
-        Section {
-            // Chosen fresh for every run: a roll does not lock to one
-            // profile, so different runs into the same roll may each pick
-            // a different one. Defaults to the last profile used, across
-            // any roll.
-            Picker("Scanning Rig Profile", selection: $model.rigProfileID) {
-                Text("None").tag(String?.none)
-                ForEach(rig.profiles) { profile in
-                    Text(profile.name).tag(String?.some(profile.profileID))
-                }
-            }
-            if model.rigProfileID == nil {
-                Text("Optional: choose the geometric calibration measured for this copy stand.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Button("Manage…") {
-                rig.refresh()
-                isPresentingFlatFieldProfiles = true
-            }
-            FlatFieldReferenceField(
-                flatField: model.flatField,
-                isBusy: activity.isBusy,
-                isAnalyzing: model.isAttachingFlatFieldReference,
-                error: model.flatFieldReferenceError,
-                onChoose: { chooseFlatFieldReference(replace: false) },
-                onReplace: { chooseFlatFieldReference(replace: true) },
-                onDropFrame: { url in
-                    Task { await model.attachFlatFieldReference(at: url) }
-                },
-                fileURL: model.fileURL(for:)
-            )
-            FilmStockField(
-                filmStock: model.filmStock,
-                catalog: model.filmCatalog,
-                isBusy: activity.isBusy,
-                error: model.filmStockError,
-                onCommit: { stock in
-                    Task { await model.setFilmStock(stock) }
-                },
-                onAppear: { model.refreshFilmCatalog() }
-            )
-            FilmKindField(
-                filmKind: model.filmKind,
-                isLocked: model.filmKindLocked,
-                isBusy: activity.isBusy,
-                error: model.filmKindError,
-                onChoose: { choice in
-                    Task { await model.setFilmKind(choice.rawValue) }
-                }
-            )
-            if model.filmBase == nil, !model.requiresBaseFrame {
-                LabeledContent("Film Base reference") {
-                    Text(CaptureStageView.baseFrameNotNeeded)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                baseFrameField
-            }
-            // The roll's Format and Auto-crop: the same stored values the
-            // Capture sheet edits (`RollFormatFields`).
-            RollFormatFields(model: model)
-            Picker("Multi-shot scan configuration", selection: $model.gridProfileID) {
-                Text("Choose…").tag(String?.none)
-                ForEach(grid.profiles) { profile in
-                    Text(profile.name).tag(String?.some(profile.profileID))
-                }
-            }
-            if let profileID = model.gridProfileID,
-                let profile = grid.profiles.first(where: { $0.profileID == profileID })
-            {
-                Text("\(profile.dimensionSummary) — \(profile.scanCount) scans per negative")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("How the scans are arranged in each negative. Choose a configuration to enable Convert.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("perNegativeHint")
-            }
-            Button("Manage…") {
-                grid.refresh()
-                isPresentingGridProfiles = true
-            }
-            if !model.groups.isEmpty {
-                GroupingPreview(groups: model.groups)
-            }
-            ForEach(model.selectionWarnings, id: \.self) { warning in
-                IssueLabel(issue: warning, style: .warning)
-            }
-            if let error = model.selectionError {
-                IssueLabel(issue: error, style: .error)
-            }
-            if let error = model.rollError {
-                IssueLabel(issue: error, style: .error)
-            }
-        } header: {
-            HStack {
-                Text("Roll Setup")
-                if model.isValidating || model.isAttachingBaseFrame || model.isAttachingFlatFieldReference {
-                    Spacer()
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    private var baseFrameField: some View {
-        BaseFrameField(
-            filmBase: model.filmBase,
-            isBusy: activity.isBusy,
-            isAnalyzing: model.isAttachingBaseFrame,
-            error: model.baseFrameError,
-            onChoose: { chooseBaseFrame(replace: false) },
-            onReplace: { chooseBaseFrame(replace: true) },
-            onDropFrame: { url in
-                Task { await model.attachBaseFrame(at: url) }
-            },
-            fileURL: model.fileURL(for:),
-            onSelectRegion: selectBaseFrameRegion
-        )
-        .sheet(isPresented: $isSelectingBaseFrameRegion) {
-            if let url = model.lastBaseFrameURL {
-                BaseFrameRegionSheet(frameURL: url) { region in
-                    Task { await model.attachBaseFrame(at: url, region: region) }
-                }
-            }
-        }
-    }
-
-    private var selectBaseFrameRegion: (() -> Void)? {
-        guard model.lastBaseFrameURL != nil else { return nil }
-        return { isSelectingBaseFrameRegion = true }
-    }
-
-    private var convertSection: some View {
-        Section("Convert") {
-            convertDropZone
-        }
-    }
-
-    private var convertDropZone: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Spacer()
-                if run.isActive {
-                    Button("Cancel", role: .destructive) { run.cancel() }
-                        .disabled(!run.canCancel)
-                }
-                Button("Convert") { handleConvertTap() }
-                    .disabled(!model.runEnabled || activity.isBusy)
-                    .keyboardShortcut(.defaultAction)
-            }
-            // Add Scans shows results for its own invocations only (M9):
-            // an apply-metadata started from the Metadata tab is not a
-            // conversion, even though it shares the same `RunModel`.
-            if run.phase != .idle, run.invocation != .applyMetadata {
-                if run.isActive {
-                    RunProgressView(run: run)
-                } else if run.phase == .finishing {
-                    FinishingView()
-                } else {
-                    RunResultView(run: run)
-                }
-            } else if !model.selectedFiles.isEmpty {
-                Text(Self.convertReadyLabel(scanCount: model.selectedFiles.count))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isConvertDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(
-                    isConvertDropTarget ? Color.accentColor : Color.secondary.opacity(0.35),
-                    style: StrokeStyle(
-                        lineWidth: isConvertDropTarget ? 2 : 1,
-                        dash: isConvertDropTarget ? [] : [5, 3]
-                    )
-                )
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onDrop(of: [.plainText], isTargeted: $isConvertDropTarget) { providers in
-            handleConvertDrop(providers)
-        }
-    }
-
-    private func handleConvertDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !activity.isBusy, let provider = providers.first else { return false }
-        _ = provider.loadObject(ofClass: String.self) { string, _ in
-            guard let string,
-                let names = CatalogueDragSupport.decodeDragPayload(string)
-            else { return }
-            Task { @MainActor in
-                applyConvertDrop(filenames: names)
-            }
-        }
-        return true
-    }
-
-    private func handleConvertTap() {
-        Task {
-            guard await model.validateSelection() else { return }
-            if Self.shouldConfirmConvert(into: selectedRoll) {
-                isConfirmingConvert = true
-            } else {
-                startRun()
-            }
-        }
-    }
-
-    @discardableResult
-    private func applyConvertDrop(filenames: [String]) -> Bool {
-        guard !activity.isBusy else { return false }
-        let valid = Set(filenames.filter { model.catalogue.contains($0) })
-        guard !valid.isEmpty else { return false }
-        model.selectedFiles = valid
-        return true
-    }
-
-    @discardableResult
-    private func applyConvertDrop(urls: [URL]) -> Bool {
-        guard !activity.isBusy, let inputFolder = model.inputFolder else { return false }
-        let names = urls.compactMap { Self.resolveFileName($0, relativeTo: inputFolder) }
-        return applyConvertDrop(filenames: names)
-    }
-
     /// Rejects sidebar selection changes while any helper is active (section
     /// 3.10). Testable so the gate stays decoupled from SwiftUI state.
     nonisolated static func guardedRollSelection(
@@ -847,32 +556,8 @@ struct ContentView: View {
         )
     }
 
-    /// Whether Convert should ask before writing into an already-populated
-    /// roll. Testable so the dialog gate stays decoupled from SwiftUI state.
-    nonisolated static func shouldConfirmConvert(into roll: Roll?) -> Bool {
-        guard let roll, roll.status == .ok else { return false }
-        return (roll.negativeCount ?? 0) > 0
-    }
-
-    // A run always adopts whatever it overlaps in place — passing no
-    // `--skip-sources` is exactly that: the covered negative keeps its id
-    // and filename, and its TIFF is replaced atomically.
-    private func startRun() {
-        Task {
-            guard await model.validateSelection() else { return }
-            guard let command = model.buildRunCommand(), let rollURL = model.rollURL else { return }
-            run.start(
-                command: command,
-                files: model.selectedFilesInCanonicalOrder,
-                outputFolder: rollURL,
-                totalNegatives: model.groups.count
-            )
-            awaitRunCompletionAndRefresh()
-        }
-    }
-
-    /// Mirrors `startRun`'s tail: a re-stitch can target `model.rollURL`,
-    /// so its contents may have changed too.
+    /// Mirrors the Add Scans stage's run tail: a re-stitch can target
+    /// `model.rollURL`, so its contents may have changed too.
     private func handleRestitchStarted() {
         awaitRunCompletionAndRefresh()
     }
@@ -890,43 +575,6 @@ struct ContentView: View {
             edit.refresh()
             library.scan()
         }
-    }
-
-    private func chooseInputFolder() {
-        guard let url = Self.pickFolder(startingAt: model.inputFolder) else { return }
-        model.inputFolder = url
-    }
-
-    private func chooseBaseFrame(replace: Bool) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = replace ? "Replace" : "Choose"
-        if let nef = UTType(filenameExtension: "nef") {
-            panel.allowedContentTypes = [nef]
-        }
-        if let inputFolder = model.inputFolder {
-            panel.directoryURL = inputFolder
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await model.attachBaseFrame(at: url) }
-    }
-
-    private func chooseFlatFieldReference(replace: Bool) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = replace ? "Replace" : "Choose"
-        if let nef = UTType(filenameExtension: "nef") {
-            panel.allowedContentTypes = [nef]
-        }
-        if let inputFolder = model.inputFolder {
-            panel.directoryURL = inputFolder
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await model.attachFlatFieldReference(at: url) }
     }
 
     /// Section 3.2's "the last folder the user opened" persists across
@@ -950,20 +598,6 @@ struct ContentView: View {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return exists && isDir.boolValue
-    }
-
-    /// Caption for the Convert zone while idle and scans are selected.
-    nonisolated static func convertReadyLabel(scanCount: Int) -> String {
-        "\(scanCount) scan\(scanCount == 1 ? "" : "s") ready to convert"
-    }
-
-    /// Given a dropped file URL and the input folder, returns the file's
-    /// name if it resides inside the folder, or `nil` otherwise.
-    nonisolated static func resolveFileName(_ url: URL, relativeTo inputFolder: URL) -> String? {
-        let inputPath = inputFolder.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        guard filePath.hasPrefix(inputPath) else { return nil }
-        return url.lastPathComponent
     }
 
     /// `canCreateDirectories` is off by default and on only where a new

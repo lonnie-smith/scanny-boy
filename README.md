@@ -113,22 +113,34 @@ There is no notarisation or Developer ID step.
 
 Everything in the app happens inside a **roll** — a durable, named folder
 you return to and add to over time, not a one-shot conversion. The window
-has a sidebar of rolls and, once one is selected, a workspace with four
-tabs: **Add Scans**, **Edit**, **Metadata**, and **Export**.
+has a sidebar of rolls and, once one is selected, a workspace with three
+tabs: **Edit**, **Metadata**, and **Export**. Negatives are added from the
+**File** menu instead — **File > Tethered Capture…** or **File > Add
+Scans…** — each of which opens a window over the main one that names, in
+large type, the roll it is adding to: the roll selected in the sidebar when
+it was opened.
 
 **The library.** The sidebar lists every roll under the library base
 (`~/Pictures/Scanny Boy` by default, relocatable from **Settings**), each
 showing its name and how many negatives it holds. **+** creates a roll —
-asking only for a name — and the sidebar's context menu renames or deletes
-one. Renaming moves the roll's folder; deleting moves it to the Trash.
+asking only for a name, then offering **Tethered Capture** and **Add Scans**
+buttons that create the roll and open that window on it straight away — and
+the sidebar's context menu renames or deletes one. Renaming moves the
+roll's folder; deleting moves it to the Trash.
 
-**Add Scans** — adding negatives to the selected roll:
+**Tethered Capture** (File > Tethered Capture…) — shooting a roll directly
+from a tethered camera. It captures each negative's multi-shot grid from the
+camera and stitches it into the roll in the background; docs/TETHER_PLAN.md
+describes it.
+
+**Add Scans** (File > Add Scans…) — adding negatives from a folder of
+existing scans to the selected roll:
 
 1. **Choose an input folder** of `.NEF` files. The app lists them in
    canonical order (capture time, falling back to filename) and shows a
    thumbnail for each.
 2. **Select one contiguous range.** Scans per negative is each run's own
-   choice, set on the Add Scans stage as a grid: **Across** by **Down**
+   choice, set in the Add Scans window as a grid: **Across** by **Down**
    (Down defaults to 1, a plain strip). The selected count must divide
    evenly by the product, and `min(across, down) <= 2` — every cell of the
    grid must show film rebate, which only holds when every cell touches
@@ -136,7 +148,7 @@ one. Renaming moves the roll's folder; deleting moves it to the Trash.
    grouping preview shows how the selection splits into negatives.
 3. **Choose a flat-field profile.** A copy-stand capture is darker at the
    corners than at the centre — lens falloff plus an uneven light source.
-   **File > Flat-Field Profiles…** manages profiles, each measured once from
+   **File > Scanning Rig Profiles…** manages profiles, each measured once from
    a reference shot of the bare light source (no negative in the holder);
    the chosen profile's gain map evens that falloff back out of every frame
    of the run. The profile is required before Stitch is enabled, and a roll
@@ -244,6 +256,19 @@ test. `scripts/test-mac.sh` regenerates the Xcode project before building —
 `mac/ScannyBoy.xcodeproj` is generated and gitignored, so a newly added Swift
 file is absent from it until you do — and runs `xcodebuild` with `-quiet`, so
 a passing run prints a handful of lines rather than about 1700.
+
+### Development data is separate from the installed app
+
+Only a Release build (what `scripts/install-mac.sh` puts in `~/Applications`)
+uses your real data. A Debug build — running from Xcode, `xcodebuild`, or the
+tests — keeps its own: preferences in a `com.lonniesmith.scanny-boy.dev`
+suite, `~/Library/Application Support/ScannyBoy-Dev` (library database,
+previews, gain maps, locks), `~/Library/Caches/ScannyBoy-Dev`,
+`~/Pictures/Scanny Boy Dev` and `~/Pictures/Scanny Boy Dev Captures`. The
+unit tests go further and use throwaway temp directories. The CLI behaves the
+same way: run from a checkout (not the packaged helper) it defaults to the
+`ScannyBoy-Dev` database. `scripts/clean-start.sh` likewise only wipes the
+development database unless you pass `--production`.
 
 Both suites keep their expensive cases behind a flag: `uv run pytest --slow`
 for the Python tier that decodes real RAW frames, stitches real scans, sweeps

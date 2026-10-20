@@ -50,7 +50,7 @@ enum CaptureSequencePhase: Sendable, Equatable {
     case stopped
 }
 
-/// Setup, sequence state machine, interval clock, and cues for the Capture tab.
+/// Setup, sequence state machine, interval clock, and cues for the Capture sheet.
 @MainActor
 @Observable
 final class CaptureSessionModel {
@@ -194,8 +194,7 @@ final class CaptureSessionModel {
             rawValue: defaults.string(forKey: Self.destinationKey) ?? CaptureDestination.buffer.rawValue
         ) ?? .buffer
         captureBaseFolder = defaults.url(forKey: Self.captureBaseKey)
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Pictures/Scanny Boy Captures", directoryHint: .isDirectory)
+            ?? AppEnvironment.defaultCaptureBase()
         gridProfileID = defaults.string(forKey: ConfigurationModel.lastGridProfileKey)
         focusAssist = FocusAssistModel(camera: camera, runner: runner, defaults: defaults)
     }
