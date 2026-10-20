@@ -1423,6 +1423,12 @@ final class EditModel {
     static let catalogedFields = ["film", "iso", "city", "state", "camera", "lens"]
 
     var catalog: [String: [String]] = [:]
+
+    /// Called after the roll-level `film` was written, with the new value.
+    /// `ContentView` wires it to `ConfigurationModel.filmStockCommittedElsewhere`
+    /// so the film stock sets the film kind by the same rule on every
+    /// screen, and to a sidebar rescan.
+    @ObservationIgnored var onRollFilmChanged: ((String?) async -> Void)?
     @ObservationIgnored private var catalogTask: Task<Void, Never>?
 
     /// Fetches the whole catalog through `metadata values`, one field at a
@@ -1482,6 +1488,9 @@ final class EditModel {
     func setRollField(_ field: String, to value: String?) async {
         await runMetadataSet(payload: ["roll": [field: value as String?]])
         rememberCatalogValue(value, for: field)
+        if field == "film", roll?.metadata.film == value {
+            await onRollFilmChanged?(value)
+        }
     }
 
     /// Sets (or clears, with `nil`) one metadata field on every selected

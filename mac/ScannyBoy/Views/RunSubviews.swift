@@ -240,6 +240,92 @@ struct FilmKindField: View {
     }
 }
 
+/// The roll's Film field, shared by Add Scans and Capture so it matches the
+/// Metadata stage's: type to get suggestions from the catalog, pick any
+/// catalog stock from the menu beside it, or type a new stock (committing
+/// saves it to the catalog). Committing writes the roll's `film` through
+/// `metadata set`, and a stock whose kind the catalog knows also sets the
+/// Film type while that is unlocked (`ConfigurationModel.setFilmStock`).
+struct FilmStockField: View {
+    let filmStock: String?
+    let catalog: ConfigurationModel.FilmCatalog
+    let isBusy: Bool
+    let error: ConfigurationModel.Issue?
+    let onCommit: (String?) -> Void
+    /// Re-reads the catalog each time the field appears.
+    var onAppear: () -> Void = {}
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent("Film") {
+                HStack(spacing: 6) {
+                    TypeaheadField(
+                        title: "Film",
+                        committedValue: filmStock,
+                        suggestions: catalog.stocks,
+                        prompt: "Type or choose a film stock",
+                        onCommit: onCommit
+                    )
+                    .labelsHidden()
+                    .accessibilityIdentifier("filmStockField")
+                    stockMenu
+                }
+            }
+            .disabled(isBusy)
+            if let error {
+                IssueLabel(issue: error, style: .error)
+            }
+        }
+        .onAppear(perform: onAppear)
+    }
+
+    /// Every catalog stock, grouped by film type where the catalog knows it.
+    private var stockMenu: some View {
+        Menu {
+            ForEach(sections, id: \.title) { section in
+                Section(section.title) {
+                    ForEach(section.stocks, id: \.self) { stock in
+                        Button(stock) { onCommit(stock) }
+                    }
+                }
+            }
+            if filmStock != nil {
+                Divider()
+                Button("Clear") { onCommit(nil) }
+            }
+        } label: {
+            Image(systemName: "chevron.down.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(catalog.stocks.isEmpty && filmStock == nil)
+        .help("Choose a film stock from the list")
+        .accessibilityLabel("Film stocks")
+        .accessibilityIdentifier("filmStockMenu")
+    }
+
+    private var sections: [(title: String, stocks: [String])] {
+        var byKind: [FilmKindChoice: [String]] = [:]
+        var unknown: [String] = []
+        for stock in catalog.stocks {
+            if let kind = catalog.kind(forStock: stock).flatMap(FilmKindChoice.init(rawValue:)) {
+                byKind[kind, default: []].append(stock)
+            } else {
+                unknown.append(stock)
+            }
+        }
+        var result: [(title: String, stocks: [String])] = FilmKindChoice.allCases.compactMap {
+            kind in
+            byKind[kind].map { (kind.label, $0.sorted()) }
+        }
+        if !unknown.isEmpty {
+            result.append(("Other", unknown.sorted()))
+        }
+        return result
+    }
+}
+
 /// The Add Scans sheet's film-base reference field.
 /// Choosing a file calls `roll set-base-frame` immediately; Convert stays
 /// disabled until a frame is attached.

@@ -53,6 +53,7 @@ final class AppActivity {
             || configuration.isAttachingBaseFrame
             || configuration.isAttachingFlatFieldReference
             || configuration.isSettingFilmKind
+            || configuration.isSettingFilmStock
             || configuration.isValidating
     }
 

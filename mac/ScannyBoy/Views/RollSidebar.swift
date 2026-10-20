@@ -173,6 +173,12 @@ private struct RollRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(roll.displayName)
+                if roll.status == .ok, let summary = roll.filmSummary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 if roll.status == .ok, let count = roll.negativeCount {
                     Text(Pluralize.count(count, "negative"))
                         .font(.caption)

@@ -389,6 +389,47 @@ def test_roll_list_emits_roll_list_with_every_roll(capsys, tmp_path):
     assert err == ""
 
 
+def test_roll_list_carries_film_and_format(capsys, tmp_path):
+    for name in ("Roll A", "Roll B"):
+        main(
+            [
+                "roll",
+                "init",
+                "--library",
+                str(tmp_path),
+                "--name",
+                name,
+                "--film-kind",
+                "colour",
+            ]
+        )
+    roll_a = tmp_path / "Roll-A"
+    assert main(["roll", "set-setup", "--roll", str(roll_a), "--format", "6x7"]) == 0
+    main(
+        [
+            "metadata",
+            "set",
+            "--roll",
+            str(roll_a),
+            "--payload",
+            json.dumps({"roll": {"film": "Kodak Portra 400"}}),
+        ]
+    )
+    capsys.readouterr()
+
+    assert main(["roll", "list", "--library", str(tmp_path)]) == 0
+
+    events, _ = _stdout_events(capsys)
+    schema = load_schema()
+    for event in events:
+        assert_matches_schema(event, schema)
+    by_name = {r["roll_name"]: r for r in events[1]["rolls"]}
+    assert by_name["Roll A"]["film"] == "Kodak Portra 400"
+    assert by_name["Roll A"]["format"] == "6x7"
+    assert by_name["Roll B"]["film"] is None
+    assert by_name["Roll B"]["format"] is None
+
+
 def test_roll_list_on_empty_library_reports_no_rolls(capsys, tmp_path):
     status = main(["roll", "list", "--library", str(tmp_path)])
 

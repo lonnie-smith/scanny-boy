@@ -239,6 +239,11 @@ class MetadataValueRow(Base):
     # ISO timestamp of the most recent use — the typeahead's
     # most-recently-used ordering key.
     last_used_at: Mapped[str] = mapped_column(Text, nullable=False)
+    # The film kind (`colour` | `monochrome`) the stock implies. Only
+    # meaningful for field `film`; NULL = unknown (every user-typed stock,
+    # and every other field). Seeded by migration 0020 and never overwritten
+    # by `upsert_metadata_values`.
+    film_kind: Mapped[str | None] = mapped_column(Text)
 
 
 class EditRow(Base):

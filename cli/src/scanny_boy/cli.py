@@ -1185,6 +1185,8 @@ def _roll_listing_entry(listing) -> RollListingEntry:
         roll_id=listing.roll_id,
         roll_name=listing.roll_name,
         negative_count=listing.negative_count,
+        film=listing.film,
+        format=listing.format,
     )
 
 
@@ -2467,12 +2469,12 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
     # values
     writer.write(Started(command="metadata values"))
     try:
-        values = run_metadata_values(args.field)
+        values, film_kinds = run_metadata_values(args.field)
     except MetadataEditFailure as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
         writer.write(Finished(status="failed", exit_status=1))
         return 1
-    writer.write(MetadataValues(field=args.field, values=values))
+    writer.write(MetadataValues(field=args.field, values=values, film_kinds=film_kinds))
     writer.write(Finished(status="success", exit_status=0))
     return 0
 

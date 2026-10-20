@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **27**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **28**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -549,7 +549,16 @@ validated before anything is written.
 `metadata values` lists the catalog of previously-entered values for one
 field (`film`, `iso`, `city`, `state`, `camera`, or `lens`), most-recently-used first, as
 a `metadata_values` event. It fails with `INVALID_METADATA` for any other
-field.
+field. The `film` catalog is pre-seeded (migration 0020) with ten common
+stocks — Kodak Ultramax 400, Gold 200, Portra 160, Portra 400, Tri-X 400,
+TMax 400, TMax P3200 and Ilford HP5+, FP4+, Delta 3200 — which sort below
+every value the user has used, in that order. Each catalog row may carry a
+film kind (`colour` or `monochrome`; the seeds all do, a user-typed stock
+never does), and for `--field film` the event also carries `film_kinds`,
+mapping each returned stock that has a kind to it, so the app can set the
+roll's film kind when a stock is picked. `film_kinds` is omitted for every
+other field; the catalog never overwrites a stored kind when a value is
+used again.
 
 `edit rotate` records a 90-degree rotation of one or more negatives —
 `cw` clockwise,
@@ -935,7 +944,7 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
-| `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first). |
+| `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first), plus `film_kinds` (stock name to `colour`/`monochrome`) when `field` is `film`. |
 | `crop_suggested` | The answer to `edit suggest-crop`. Carries `negative_id`, `rect` (`{x, y, width, height}` on the full uncropped display canvas, or `null` exactly when `refused` is set), `canvas_width`, `canvas_height`, `preset` (the ratio fitted, or `null` when unconstrained) and `refused` (a refusal token or `null`). Carries no `run_id`. |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` plus an optional `source: "auto"`, or `null`), and `preview_path`. |
 | `negative_deleted` | A negative was deleted by `edit delete`. Carries `negative_id` and `output`. |
@@ -990,10 +999,12 @@ progress from counts, never from the largest source index seen.
 cancelled, it emits no `item_done` events for that group's staged files.
 
 `roll_list` carries `rolls`, an array of `{path, status, reason, roll_id,
-roll_name, negative_count}`. `status` is `"ok"` or `"unreadable"`. `reason`
-is `{code, message}` for an unreadable roll and null otherwise; the
-remaining fields are null when unreadable. `negative_count` is the number of
-negatives in the roll.
+roll_name, negative_count, film, format}`. `status` is `"ok"` or
+`"unreadable"`. `reason` is `{code, message}` for an unreadable roll and
+null otherwise; the remaining fields are null when unreadable.
+`negative_count` is the number of negatives in the roll. `film` is the
+roll's film-stock string (the roll-level `film` metadata) and `format` its
+setup format (`roll set-setup --format`); each is also null when unset.
 
 ### Cancellation
 

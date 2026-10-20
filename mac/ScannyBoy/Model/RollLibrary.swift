@@ -241,7 +241,9 @@ final class RollLibrary {
                             reason: nil,
                             rollID: rollID,
                             rollName: rollName,
-                            negativeCount: roll.negativeCount
+                            negativeCount: roll.negativeCount,
+                            film: roll.film,
+                            format: roll.format
                         )
                     case .error:
                         failure = RenameError.failed(event.message ?? "roll rename failed")

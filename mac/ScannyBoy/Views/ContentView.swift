@@ -370,7 +370,30 @@ struct ContentView: View {
         keyboard.workspaceTab = workspaceTab
         keyboard.isBusy = activity.isBusy
         installCaptureHandlers()
+        installRollDetailHandlers()
         wireCaptureToRoll()
+    }
+
+    /// The roll's film stock and format show in the sidebar and in the
+    /// Metadata stage's roll copy, so a change made on the Add Scans or
+    /// Capture sheet refreshes both; a film stock committed on the Metadata
+    /// stage goes the other way, through `ConfigurationModel`'s film-kind
+    /// rule, and rescans the sidebar.
+    private func installRollDetailHandlers() {
+        if model.onRollDetailsChanged == nil {
+            model.onRollDetailsChanged = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
+        if edit.onRollFilmChanged == nil {
+            edit.onRollFilmChanged = { [model, edit, library] stock in
+                await model.filmStockCommittedElsewhere(stock)
+                // The film kind may have followed the stock.
+                edit.refresh()
+                library.scan()
+            }
+        }
     }
 
     private func installCaptureHandlers() {
@@ -606,6 +629,16 @@ struct ContentView: View {
                     Task { await model.attachFlatFieldReference(at: url) }
                 },
                 fileURL: model.fileURL(for:)
+            )
+            FilmStockField(
+                filmStock: model.filmStock,
+                catalog: model.filmCatalog,
+                isBusy: activity.isBusy,
+                error: model.filmStockError,
+                onCommit: { stock in
+                    Task { await model.setFilmStock(stock) }
+                },
+                onAppear: { model.refreshFilmCatalog() }
             )
             FilmKindField(
                 filmKind: model.filmKind,
