@@ -56,9 +56,10 @@ final class RollLibrary {
 
     @ObservationIgnored private var scanTask: Task<Void, Never>?
 
-    /// `libraryBase` defaults to `~/Pictures/Scanny Boy` when
-    /// not given; tests always inject one explicitly, and must never fall
-    /// through to `.picturesDirectory`.
+    /// `libraryBase` defaults to `~/Pictures/Scanny Boy` when not given
+    /// (`AppEnvironment.defaultLibraryBase`, which is a separate folder in
+    /// development builds and a temp folder under test); tests always inject
+    /// one explicitly.
     init(
         runner: CLIRunner,
         libraryBase: URL? = nil,
@@ -79,12 +80,7 @@ final class RollLibrary {
         if let saved = defaults.url(forKey: libraryBaseKey) {
             return saved
         }
-        let pictures =
-            fileManager.urls(for: .picturesDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appending(
-                path: "Pictures", directoryHint: .isDirectory
-            )
-        return pictures.appending(path: "Scanny Boy", directoryHint: .isDirectory)
+        return AppEnvironment.defaultLibraryBase(fileManager: fileManager)
     }
 
     private static func save(_ url: URL, in defaults: UserDefaults) {

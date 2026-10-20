@@ -285,7 +285,7 @@ to bottom.
 **The library database**
 | Module | Role |
 | --- | --- |
-| `library/db.py` | The one SQLite store (`~/Library/Application Support/ScannyBoy/library.db`; `SCANNY_BOY_LIBRARY_DB` relocates it): engine cache, WAL/busy-timeout PRAGMAs, Alembic migrations applied programmatically on every open. |
+| `library/db.py` | The one SQLite store (`~/Library/Application Support/ScannyBoy/library.db` for the packaged helper, `.../ScannyBoy-Dev/library.db` when run from source; `SCANNY_BOY_LIBRARY_DB` relocates it): engine cache, WAL/busy-timeout PRAGMAs, Alembic migrations applied programmatically on every open. |
 | `library/models.py` | The SQLAlchemy rows: roll, run, source, negative, edit. |
 | `library/repo.py` | `RollManifest` dataclasses to and from rows. Writers use `mutate_roll` (one `BEGIN IMMEDIATE` transaction: reload the roll, apply the caller's change, recompute `updated_at` and `sequence`, commit) or `insert_roll` for a new roll; `load_roll` reads. `save_roll`, which upserts a whole manifest keyed by `roll_id` and diffs children by key (deleting rows the copy lacks), is the snapshot save underneath and is for test fixtures only (§9.2). |
 
@@ -881,7 +881,10 @@ identity in place, not by publishing a rival.
   the published TIFFs (plus `.work/` during a run); the record — roll,
   runs, sources, negatives, edits — lives in the library database at
   `~/Library/Application Support/ScannyBoy/library.db` (§5's `library/`
-  package; `SCANNY_BOY_LIBRARY_DB` relocates it). A roll "exists" exactly
+  package; `SCANNY_BOY_LIBRARY_DB` relocates it). Debug builds and tests never
+  use these locations: `AppEnvironment` gives development its own
+  `ScannyBoy-Dev` support/cache folders, `Scanny Boy Dev` Pictures folders and
+  preferences suite, and tests temp directories. A roll "exists" exactly
   when it is registered there. `roll list` reports registered rolls from
   the database, and a registered roll whose folder has vanished (unmounted
   drive, manual delete) is reported `unreadable` with `ROLL_NOT_FOUND`

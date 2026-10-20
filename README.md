@@ -257,6 +257,19 @@ test. `scripts/test-mac.sh` regenerates the Xcode project before building —
 file is absent from it until you do — and runs `xcodebuild` with `-quiet`, so
 a passing run prints a handful of lines rather than about 1700.
 
+### Development data is separate from the installed app
+
+Only a Release build (what `scripts/install-mac.sh` puts in `~/Applications`)
+uses your real data. A Debug build — running from Xcode, `xcodebuild`, or the
+tests — keeps its own: preferences in a `com.lonniesmith.scanny-boy.dev`
+suite, `~/Library/Application Support/ScannyBoy-Dev` (library database,
+previews, gain maps, locks), `~/Library/Caches/ScannyBoy-Dev`,
+`~/Pictures/Scanny Boy Dev` and `~/Pictures/Scanny Boy Dev Captures`. The
+unit tests go further and use throwaway temp directories. The CLI behaves the
+same way: run from a checkout (not the packaged helper) it defaults to the
+`ScannyBoy-Dev` database. `scripts/clean-start.sh` likewise only wipes the
+development database unless you pass `--production`.
+
 Both suites keep their expensive cases behind a flag: `uv run pytest --slow`
 for the Python tier that decodes real RAW frames, stitches real scans, sweeps
 the full tone parameter box, and runs the packaged app;
