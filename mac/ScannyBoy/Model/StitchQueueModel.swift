@@ -149,7 +149,7 @@ final class StitchQueueModel {
     /// (see `startComposesIfNeeded`), at this value (PARALLEL_STITCH_PLAN
     /// §3.7–3.8). It is read each time the queue schedules work, so lowering
     /// it never cancels a running compose; it only stops new ones starting.
-    /// Sticky across launches. The Capture tab's picker disables it while a
+    /// Sticky across launches. The Capture sheet's picker disables it while a
     /// capture sequence or the queue is busy.
     var parallelStitches: Int {
         didSet { defaults.set(parallelStitches, forKey: Self.parallelStitchesKey) }
@@ -189,7 +189,7 @@ final class StitchQueueModel {
     var isQueueBusy: Bool { hasWork || !committingRolls.isEmpty || isRefreshing }
 
     /// The entries that belong to `roll`, oldest first. The queue holds
-    /// entries for every roll it has worked on, but a roll's Capture tab
+    /// entries for every roll it has worked on, but a roll's Capture sheet
     /// must only show its own.
     func negatives(for roll: URL?) -> [QueuedNegative] {
         guard let roll else { return [] }

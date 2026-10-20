@@ -34,7 +34,7 @@ struct BufferLeftover: Sendable, Hashable, Identifiable {
     let objectInfo: PTP.ObjectInfo
 }
 
-/// Connection states shown in the Capture tab (§2.1).
+/// Connection states shown in the Capture sheet (§2.1).
 enum TetherConnectionState: Sendable, Equatable {
     case absent
     case searching
