@@ -50,7 +50,7 @@ enum CaptureSequencePhase: Sendable, Equatable {
     case stopped
 }
 
-/// Setup, sequence state machine, interval clock, and cues for the Capture tab.
+/// Setup, sequence state machine, interval clock, and cues for the Capture sheet.
 @MainActor
 @Observable
 final class CaptureSessionModel {

@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The Capture workspace tab.
+/// The Tethered Capture stage, shown in `RollIntakeSheet` for the roll it
+/// was opened on.
 struct CaptureStageView: View {
     @Bindable var capture: CaptureSessionModel
     @Bindable var model: ConfigurationModel
@@ -243,7 +244,7 @@ struct CaptureStageView: View {
                     .foregroundStyle(.orange)
             }
             // The same sheets the Add Scans stage's Manage… buttons open;
-            // `ContentView` owns them and answers these notifications.
+            // `RollIntakeSheet` answers these notifications.
             Button("Manage…") {
                 NotificationCenter.default.post(name: .scannyBoyRequestFlatFieldProfiles, object: nil)
             }
@@ -725,7 +726,7 @@ struct CaptureStageView: View {
         NSWorkspace.shared.recycle(existing) { _, _ in }
     }
 
-    /// Keeps the Capture tab's rig picker in sync with `model.rigProfileID`
+    /// Keeps the Capture sheet's rig picker in sync with `model.rigProfileID`
     /// (the single source of truth `wireCaptureToRoll` pulls from on every
     /// roll rescan) and re-stitches queued negatives with the new rig,
     /// matching the Add Scans picker's behavior.

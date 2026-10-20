@@ -11,9 +11,6 @@ struct AppKeyboardStateTests {
         let keyboard = AppKeyboardState()
         keyboard.isBusy = false
 
-        keyboard.workspaceTab = .addScans
-        #expect(keyboard.canSelectAll)
-
         keyboard.workspaceTab = .edit
         #expect(keyboard.canSelectAll)
 
@@ -26,6 +23,46 @@ struct AppKeyboardStateTests {
         keyboard.workspaceTab = .edit
         keyboard.isBusy = true
         #expect(!keyboard.canSelectAll)
+    }
+
+    @Test("an intake sheet routes select-all to Add Scans and blocks workspace shortcuts")
+    func intakeSheetGatesShortcuts() {
+        let keyboard = AppKeyboardState()
+        keyboard.workspaceTab = .edit
+        keyboard.previewHasOutput = true
+        keyboard.previewPaneMounted = true
+
+        keyboard.intake = .addScans
+        #expect(keyboard.canSelectAll)
+        #expect(!keyboard.canRotate)
+        #expect(!keyboard.canCrop)
+        #expect(!keyboard.canZoom)
+        #expect(!keyboard.canNavigate)
+
+        keyboard.intake = .capture
+        #expect(!keyboard.canSelectAll)
+        #expect(!keyboard.canNavigate)
+
+        keyboard.intake = nil
+        #expect(keyboard.canSelectAll)
+        #expect(keyboard.canRotate)
+        #expect(keyboard.canNavigate)
+    }
+
+    @Test("intake commands need a selected roll, no open sheet, and an idle app")
+    func canOpenIntake() {
+        let keyboard = AppKeyboardState()
+        #expect(!keyboard.canOpenIntake)
+
+        keyboard.hasSelectedRoll = true
+        #expect(keyboard.canOpenIntake)
+
+        keyboard.intake = .capture
+        #expect(!keyboard.canOpenIntake)
+
+        keyboard.intake = nil
+        keyboard.isBusy = true
+        #expect(!keyboard.canOpenIntake)
     }
 
     @Test("zoom requires the Edit tab, output, and a mounted preview pane")
@@ -69,7 +106,7 @@ struct AppKeyboardStateTests {
         keyboard.workspaceTab = .metadata
         #expect(keyboard.canNavigate)
 
-        keyboard.workspaceTab = .addScans
+        keyboard.workspaceTab = .export
         #expect(!keyboard.canNavigate)
 
         keyboard.workspaceTab = .edit

@@ -413,14 +413,14 @@ final class ConfigurationModel {
         flatField = result.flatField
     }
 
-    /// Called when the Capture tab attaches a bare-light reference so Add
+    /// Called when the Capture sheet attaches a bare-light reference so Add
     /// Scans stays in sync without a second CLI round trip.
     func receiveFlatFieldReference(_ reference: FlatFieldReference) {
         flatField = reference
         flatFieldReferenceError = nil
     }
 
-    /// Called when the Capture tab attaches a base frame, for the same
+    /// Called when the Capture sheet attaches a base frame, for the same
     /// reason as `receiveFlatFieldReference`: otherwise this model's stale
     /// (nil) `filmBase` is copied back over Capture's on the next roll sync.
     func receiveFilmBase(_ filmBase: FilmBase) {

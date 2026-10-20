@@ -85,22 +85,7 @@ struct ScannyBoyApp: App {
             .onAppear(perform: resolveRunnerIfNeeded)
         }
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("Re-stitch…") {
-                    NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Scanning Rig Profiles…") {
-                    NotificationCenter.default.post(
-                        name: .scannyBoyRequestFlatFieldProfiles, object: nil
-                    )
-                }
-                Button("Grid Configurations…") {
-                    NotificationCenter.default.post(
-                        name: .scannyBoyRequestGridProfiles, object: nil
-                    )
-                }
-            }
+            FileMenuCommands(keyboard: keyboard)
             AppKeyboardCommands(keyboard: keyboard)
         }
 
@@ -172,7 +157,50 @@ struct ScannyBoyApp: App {
     }
 }
 
+/// The File menu's own items. A `Commands` type rather than inline in
+/// `ScannyBoyApp.body` so the intake items observe `AppKeyboardState` and
+/// enable only when there is a selected roll to add to.
+struct FileMenuCommands: Commands {
+    @Bindable var keyboard: AppKeyboardState
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("Tethered Capture…") {
+                NotificationCenter.default.post(name: .scannyBoyRequestTetheredCapture, object: nil)
+            }
+            .disabled(!keyboard.canOpenIntake)
+            Button("Add Scans…") {
+                NotificationCenter.default.post(name: .scannyBoyRequestAddScans, object: nil)
+            }
+            .disabled(!keyboard.canOpenIntake)
+            Divider()
+            Button("Re-stitch…") {
+                NotificationCenter.default.post(name: .scannyBoyRequestRestitch, object: nil)
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("Scanning Rig Profiles…") {
+                NotificationCenter.default.post(
+                    name: .scannyBoyRequestFlatFieldProfiles, object: nil
+                )
+            }
+            Button("Grid Configurations…") {
+                NotificationCenter.default.post(
+                    name: .scannyBoyRequestGridProfiles, object: nil
+                )
+            }
+        }
+    }
+}
+
 extension Notification.Name {
+    /// File > Tethered Capture… and File > Add Scans…: open
+    /// `RollIntakeSheet` on the selected roll. `ContentView` answers them.
+    static let scannyBoyRequestTetheredCapture = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestTetheredCapture"
+    )
+    static let scannyBoyRequestAddScans = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestAddScans"
+    )
     /// Chunk P2-10's menu command for re-stitch. A notification, rather than
     /// a focused binding, because this is a single-window app: there is only
     /// ever one `ContentView` that could possibly want to hear it.

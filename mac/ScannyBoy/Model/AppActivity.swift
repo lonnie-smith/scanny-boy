@@ -8,7 +8,7 @@ import Observation
 /// gates on instead of reading `run.isActive` alone, which only ever
 /// covered `RunModel`'s own helper.
 ///
-/// Tethered capture relaxes the rule: the Capture tab stays live while a
+/// Tethered capture relaxes the rule: the Capture sheet stays live while a
 /// roll's stitch queue drains (docs/TETHER_PLAN.md §4.2).
 @MainActor
 @Observable
@@ -39,7 +39,7 @@ final class AppActivity {
         self.stitchQueue = stitchQueue
     }
 
-    /// Global busy: blocks most workspace chrome, but not the Capture tab.
+    /// Global busy: blocks most workspace chrome, but not the Capture sheet.
     var isBusy: Bool {
         run.isActive
             || edit.isRotating

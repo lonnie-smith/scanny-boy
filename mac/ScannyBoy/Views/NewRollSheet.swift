@@ -4,10 +4,15 @@ import SwiftUI
 /// every roll lives under the library base, no scans-per-
 /// negative, since that is each stitch batch's choice on Add Scans, and no
 /// film kind, since that is chosen on the Add Scans stage before every run.
+///
+/// There is no plain Create: a new roll is always followed by filling it, so
+/// the two buttons each create the roll and name the intake sheet
+/// (`RollIntakeSheet`) to open on it next.
 struct NewRollSheet: View {
     let library: RollLibrary
-    /// Called with the newly created roll, right before the sheet dismisses.
-    let onCreated: (Roll) -> Void
+    /// Called with the newly created roll and the intake the user chose,
+    /// right before the sheet dismisses.
+    let onCreated: (Roll, RollIntakeKind) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -34,15 +39,22 @@ struct NewRollSheet: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
+                // Not while creating: the roll would land after the sheet
+                // is gone, with nothing left to open its intake sheet.
                 Button("Cancel") { dismiss() }
-                Button("Create") { create() }
+                    .disabled(isCreating)
+                Button("Add Scans") { create(then: .addScans) }
+                    .disabled(isReady == false)
+                    .accessibilityIdentifier("createRollAddScansButton")
+                Button("Tethered Capture") { create(then: .capture) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isReady == false)
-                    .accessibilityIdentifier("createRollButton")
+                    .accessibilityIdentifier("createRollCaptureButton")
             }
         }
         .padding(20)
         .frame(minWidth: 360)
+        .interactiveDismissDisabled(isCreating)
         .onAppear {
             name = Self.defaultName()
         }
@@ -66,7 +78,7 @@ struct NewRollSheet: View {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isCreating
     }
 
-    private func create() {
+    private func create(then intake: RollIntakeKind) {
         isCreating = true
         errorMessage = nil
         Task {
@@ -74,7 +86,7 @@ struct NewRollSheet: View {
             isCreating = false
             switch result {
             case .success(let roll):
-                onCreated(roll)
+                onCreated(roll, intake)
                 dismiss()
             case .failure(_, let message):
                 errorMessage = message

@@ -72,7 +72,7 @@ struct ContentViewTests {
 
     @Test
     func shouldConfirmConvertReturnsFalseForNilRoll() {
-        #expect(ContentView.shouldConfirmConvert(into: nil) == false)
+        #expect(AddScansStageView.shouldConfirmConvert(into: nil) == false)
     }
 
     @Test
@@ -85,7 +85,7 @@ struct ContentViewTests {
             rollName: "Empty",
             negativeCount: 0
         )
-        #expect(ContentView.shouldConfirmConvert(into: roll) == false)
+        #expect(AddScansStageView.shouldConfirmConvert(into: roll) == false)
     }
 
     @Test
@@ -98,7 +98,7 @@ struct ContentViewTests {
             rollName: nil,
             negativeCount: 3
         )
-        #expect(ContentView.shouldConfirmConvert(into: roll) == false)
+        #expect(AddScansStageView.shouldConfirmConvert(into: roll) == false)
     }
 
     @Test
@@ -111,7 +111,7 @@ struct ContentViewTests {
             rollName: "Tri-X",
             negativeCount: 2
         )
-        #expect(ContentView.shouldConfirmConvert(into: roll) == true)
+        #expect(AddScansStageView.shouldConfirmConvert(into: roll) == true)
     }
 
     // MARK: - CatalogueDragSupport.filenamesForDrag
@@ -149,12 +149,12 @@ struct ContentViewTests {
 
     @Test
     func convertReadyLabelUsesSingularForOneScan() {
-        #expect(ContentView.convertReadyLabel(scanCount: 1) == "1 scan ready to convert")
+        #expect(AddScansStageView.convertReadyLabel(scanCount: 1) == "1 scan ready to convert")
     }
 
     @Test
     func convertReadyLabelUsesPluralForMultipleScans() {
-        #expect(ContentView.convertReadyLabel(scanCount: 8) == "8 scans ready to convert")
+        #expect(AddScansStageView.convertReadyLabel(scanCount: 8) == "8 scans ready to convert")
     }
 
     // MARK: - resolveFileName
@@ -163,21 +163,21 @@ struct ContentViewTests {
     func resolveFileNameReturnsNameWhenFileIsInsideInputFolder() {
         let input = URL(filePath: "/photos/scans")
         let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
-        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
+        #expect(AddScansStageView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
     }
 
     @Test
     func resolveFileNameReturnsNilWhenFileIsOutsideInputFolder() {
         let input = URL(filePath: "/photos/scans")
         let file = URL(filePath: "/other-folder/_DSC4638.NEF")
-        #expect(ContentView.resolveFileName(file, relativeTo: input) == nil)
+        #expect(AddScansStageView.resolveFileName(file, relativeTo: input) == nil)
     }
 
     @Test
     func resolveFileNameHandlesTrailingSlash() {
         let input = URL(filePath: "/photos/scans/")
         let file = URL(filePath: "/photos/scans/_DSC4638.NEF")
-        #expect(ContentView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
+        #expect(AddScansStageView.resolveFileName(file, relativeTo: input) == "_DSC4638.NEF")
     }
 
     // MARK: - NewRollSheet.defaultName
