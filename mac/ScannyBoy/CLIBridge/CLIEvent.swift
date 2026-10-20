@@ -78,7 +78,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// --compose-only`, the `negative_composed` event (and, from a later
     /// chunk, `negative_published`), and the `COMPOSE_ARTIFACT_STALE` and
     /// `FILM_BASE_CHANGED` codes.
-    public static let supportedProtocolVersion = 26
+    ///
+    /// Protocol 27 adds `roll set-base-frame --region` and the film-base
+    /// block's `region` field, and lets a monochrome roll stitch without a
+    /// base frame.
+    public static let supportedProtocolVersion = 27
 
     public let protocolVersion: Int
     public let kind: Kind

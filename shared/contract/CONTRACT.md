@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **26**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **27**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -18,8 +18,8 @@ always a new roll. The version history (what each protocol bump added and
 why) is in git log and `ARCHITECTURE.md` §3, not repeated here; what
 follows is current behaviour only.
 
-**The film-base reference**: `roll set-base-frame --roll DIR --frame FILE`
-attaches one measured per-roll film-base
+**The film-base reference**: `roll set-base-frame --roll DIR --frame FILE
+[--region X0,Y0,X1,Y1]` attaches one measured per-roll film-base
 reference — the per-channel median log density inside the film rebate of
 one dedicated reference frame, shot once per roll showing as much clear
 rebate as possible, exposed about two stops darker than the roll's scans.
@@ -33,7 +33,16 @@ app can gate Convert without starting a run:
 `{density (3-array), locked_at, attached_at, source_name, source_sha256,
 camera_model, chosen_index, populations (array of
 {density, luma, area_fraction, cells, spread}, thinnest first),
-clipped_fractions, grid_cells, measure_version, exposure}`. A roll whose
+clipped_fractions, grid_cells, measure_version, exposure, region}`.
+`--region` confines the measurement to a rectangle of the frame, in
+fractions of its width and height (`0 <= x0 < x1 <= 1`, likewise y; a
+malformed one is a usage error) — for a frame where the clear rebate is a
+strip rather than most of the picture. Every gate then applies to the
+region instead of the frame (the rebate must dominate it, be flat and
+unclipped, and cover at least the minimum cell count), `area_fraction` and
+`grid_cells` are of the region, and `region` records it as
+`[x0, y0, x1, y1]` (`null` for the whole frame; absent on a block attached
+before protocol 27). A roll whose
 base frame was attached before protocol 22 may also carry
 `flat_field_profile_id`, which nothing writes or reads any more (the gain map
 is the roll's own `flat_field` block). `density` is always a
@@ -46,8 +55,10 @@ replaces freely while unlocked and emits one `base_frame_set` event
 gate failure emits the error and changes nothing on disk. The first
 negative published against the reference sets `locked_at` in the same
 manifest write; a run that fails before publishing anything leaves it null.
-`run`/`stitch` on an ABSENT roll fail `FILM_BASE_REQUIRED` before any pixel
-work. Codes: `FILM_BASE_REQUIRED`, `FILM_BASE_LOCKED`, `FILM_BASE_NOT_FOUND`,
+`run`/`stitch` on an ABSENT colour roll fail `FILM_BASE_REQUIRED` before any
+pixel work; a monochrome roll needs no base frame (nothing reads its
+density), so an ABSENT one stitches and its first publish has nothing to
+lock. Codes: `FILM_BASE_REQUIRED`, `FILM_BASE_LOCKED`, `FILM_BASE_NOT_FOUND`,
 `FILM_BASE_TOO_SMALL`, `FILM_BASE_CLIPPED`, `FILM_BASE_TOO_DARK`,
 `FILM_BASE_AMBIGUOUS`, `ROLL_PREDATES_FILM_BASE` (all errors),
 `FILM_BASE_CAMERA_CONFLICT`, `FLATFIELD_REFERENCE_RIG_CONFLICT` (warnings). Each
@@ -203,7 +214,7 @@ scanny-boy roll list   --library DIR
 scanny-boy roll info   --roll DIR
 scanny-boy roll rename --roll DIR --name NAME
 scanny-boy roll delete --roll DIR
-scanny-boy roll set-base-frame --roll DIR --frame FILE
+scanny-boy roll set-base-frame --roll DIR --frame FILE [--region X0,Y0,X1,Y1]
 scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]
 scanny-boy roll set-setup --roll DIR [--grid AxD] [--interval SECONDS] [--format FORMAT]
                           [--auto-crop {on,off}]

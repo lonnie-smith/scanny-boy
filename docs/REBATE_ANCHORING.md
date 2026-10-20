@@ -567,6 +567,30 @@ be compared against a fresh one.
 
 ---
 
+### 2.6 Measuring inside a selected area (protocol 27)
+
+A frame where clear rebate dominates is not always to hand — a roll may have
+no clean leader, or the leader may be fogged. Every ordinary negative,
+though, shows a strip of rebate along an edge or between frames, which can
+never reach `FILM_BASE_MIN_AREA_FRACTION` of a whole frame.
+`roll set-base-frame --region X0,Y0,X1,Y1` measures inside a rectangle the
+user draws over that strip, in fractions of the frame's width and height.
+
+- **The detector and every threshold are unchanged**; only what counts as
+  "the frame" shrinks. The rebate must still dominate the region, be flat,
+  unclipped, not too dark, and cover at least `FILM_BASE_MIN_CELLS` cells
+  (about 190 px square at the pinned cell size), and a second large flat
+  population in the region (bare light, sprocket holes) still refuses it.
+- **The region is cut from the block-median grid of the whole frame**, not
+  from the pixels, so a cell stays the same piece of film: a small pixel crop
+  would fall under `ANALYSIS_PASSTHROUGH_PX` and be measured per pixel, which
+  changes the flatness statistic.
+- The app draws the rectangle on the NEF's embedded preview. ImageIO applies
+  the camera's orientation to it and rawpy applies the same orientation to
+  the decode, so a fraction of one is the same film in the other.
+- The block records `region` (`null` for the whole frame); `area_fraction`
+  and `grid_cells` are then of the region.
+
 ## 3. The roll-level state machine
 
 ### 3.1 The `film_base` manifest block
@@ -659,8 +683,8 @@ Rules, stated so they can be implemented literally:
    > "this roll's film-base reference was locked on 2026-09-06 when its first
    > negative was converted and cannot be changed; create a new roll to use a
    > different base frame"
-4. **`run` / `stitch` on an ABSENT roll**: error `FILM_BASE_REQUIRED` **before
-   any pixel work**, message:
+4. **`run` / `stitch` on an ABSENT colour roll** (a monochrome roll needs
+   none, §5): error `FILM_BASE_REQUIRED` **before any pixel work**, message:
    > "this roll has no film-base reference; add one with the base-frame field
    > before converting scans (docs/REBATE_ANCHORING.md)"
 5. **`run` / `stitch` on an ATTACHED roll**: proceed. In `_append_this_run`,
@@ -789,11 +813,16 @@ before `analyze_bounds` runs, and with one channel the colour deviation is
 identically zero. There is no orange mask to anchor and nothing for a base
 frame to contribute.
 
-1. **The base frame is still required.** One rule, no branches. The film kind
-   is not known until the first run's detector pre-pass, so a conditional
-   requirement would have to be evaluated after that decision — and a roll
-   that skipped the base frame because the detector guessed monochrome, then
-   turned out to be colour, could never be anchored without starting over.
+1. **The base frame is optional** (protocol 27; it was originally required,
+   "one rule, no branches", because the film kind was only decided by the
+   first run's detector pre-pass). The film kind is now an explicit roll
+   setting, frozen once the roll has runs, so a roll is known to be
+   monochrome before its first stitch and can never turn out to be colour
+   afterwards. Rule 4 of §3.2 therefore applies to colour rolls only; a
+   monochrome roll with no base frame stitches, and its first publish has
+   no film base to lock. A silver leader is also the frame most likely to
+   fail the gates (nearly clear, so easily clipped at scan exposure) — for
+   no benefit, since nothing reads the result.
 2. **It is measured and recorded as three channels**, exactly as on a colour
    roll. The block is evidence and provenance; recording it costs nothing.
 3. **It is not consumed.** §4.1's `len(base_refs) == channels` guard makes a

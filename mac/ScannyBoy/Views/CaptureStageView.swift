@@ -12,6 +12,7 @@ struct CaptureStageView: View {
     @FocusState private var captureFocused: Bool
     @State private var isConfirmingDiscard = false
     @State private var isConfirmingDiscardNegative = false
+    @State private var isSelectingBaseFrameRegion = false
 
     private let intervalChoices = [2, 3, 4, 5, 6, 8, 10]
 
@@ -88,6 +89,13 @@ struct CaptureStageView: View {
         }
         .onChange(of: grid.profiles) { _, profiles in
             resolveCaptureGridProfile(with: profiles)
+        }
+        .sheet(isPresented: $isSelectingBaseFrameRegion) {
+            if let url = capture.lastBaseFrameURL {
+                BaseFrameRegionSheet(frameURL: url) { region in
+                    Task { await capture.measureBaseFrame(region: region) }
+                }
+            }
         }
     }
 
@@ -234,7 +242,12 @@ struct CaptureStageView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            Picker("Grid", selection: $capture.gridProfileID) {
+            // The same sheets the Add Scans stage's Manage… buttons open;
+            // `ContentView` owns them and answers these notifications.
+            Button("Manage…") {
+                NotificationCenter.default.post(name: .scannyBoyRequestFlatFieldProfiles, object: nil)
+            }
+            Picker("Multi-shot scan configuration", selection: $capture.gridProfileID) {
                 Text("Choose…").tag(String?.none)
                 ForEach(grid.profiles) { profile in
                     Text(profile.name).tag(String?.some(profile.profileID))
@@ -246,6 +259,12 @@ struct CaptureStageView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Button("Manage…") {
+                NotificationCenter.default.post(name: .scannyBoyRequestGridProfiles, object: nil)
+            }
+            // Editing the configurations can clear or reshape the selected
+            // one, which must not happen under an open negative.
+            .disabled(capture.sequencePhase != .idle)
             Picker("Interval", selection: $capture.intervalSeconds) {
                 ForEach(intervalChoices, id: \.self) { seconds in
                     Text("\(seconds) s").tag(seconds)
@@ -325,7 +344,7 @@ struct CaptureStageView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let percent = filmBase.areaFractionPercent {
-                    Text("rebate: \(percent)% of frame")
+                    Text("rebate: \(percent)% of \(filmBase.isRegion ? "selected area" : "frame")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -336,6 +355,10 @@ struct CaptureStageView: View {
                 } else {
                     captureBaseFrameButton("Capture again")
                 }
+            } else if !capture.requiresBaseFrame {
+                Text(Self.baseFrameNotNeeded)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Text(Self.baseFrameInstructions)
                     .font(.caption)
@@ -347,6 +370,14 @@ struct CaptureStageView: View {
             }
             if let error = capture.baseFrameError {
                 IssueLabel(issue: error, style: .error)
+            }
+            // The alternative to a frame of leader: select the strip of
+            // clear rebate on the frame just shot.
+            if capture.lastBaseFrameURL != nil, capture.filmBase?.lockedAt == nil {
+                Button("Select Area of Clear Base…") {
+                    isSelectingBaseFrameRegion = true
+                }
+                .disabled(isBaseFrameButtonDisabled)
             }
         }
     }
@@ -372,14 +403,15 @@ struct CaptureStageView: View {
         Button(title) {
             Task { await capture.shootBaseFrame() }
         }
-        .disabled(
-            capture.connectionState != .ready
-                || capture.isShootingBaseFrame
-                || capture.filmBase?.lockedAt != nil
-                || capture.sequencePhase != .idle
-                || capture.isShootingFlatFieldReference
-                || capture.focusAssist.isCheckShotBusy
-        )
+        .disabled(capture.connectionState != .ready || isBaseFrameButtonDisabled)
+    }
+
+    private var isBaseFrameButtonDisabled: Bool {
+        capture.isShootingBaseFrame
+            || capture.filmBase?.lockedAt != nil
+            || capture.sequencePhase != .idle
+            || capture.isShootingFlatFieldReference
+            || capture.focusAssist.isCheckShotBusy
     }
 
     private func baseFrameDensitySummary(_ density: [Double]) -> String {
@@ -393,9 +425,14 @@ struct CaptureStageView: View {
 
     private static let baseFrameInstructions = """
         Frame a piece of leader (or any stretch where clear rebate dominates \
-        the frame). Keep bare light and sprocket holes out of the frame. \
-        Expose at the same shutter, aperture and ISO as your scans, clear \
-        of clipping.
+        the frame), or any frame showing a strip of clear rebate — then \
+        select that strip. Keep bare light and sprocket holes out. Expose at \
+        the same shutter, aperture and ISO as your scans, clear of clipping.
+        """
+
+    static let baseFrameNotNeeded = """
+        Not needed for silver B&W film: a base frame anchors the colour of \
+        the orange mask, and a black-and-white roll has none.
         """
 
     @ViewBuilder

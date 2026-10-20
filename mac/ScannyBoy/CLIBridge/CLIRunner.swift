@@ -99,20 +99,26 @@ public struct CLICommand: Sendable, Hashable {
         CLICommand(arguments: ["roll", "delete", "--roll", roll.path])
     }
 
-    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE`
+    /// `scanny-boy roll set-base-frame --roll DIR --frame FILE [--region X0,Y0,X1,Y1]`
     ///
     /// The only writer of `film_base.density`. The app calls this
     /// immediately when the user chooses a base frame on
-    /// the Add Scans sheet — never deferred to Convert.
-    public static func rollSetBaseFrame(
+    /// the Add Scans sheet — never deferred to Convert. `region` confines
+    /// the measurement to the area the user drew over clear rebate.
+    static func rollSetBaseFrame(
         roll: URL,
-        frame: URL
+        frame: URL,
+        region: BaseFrameRegion? = nil
     ) -> CLICommand {
-        CLICommand(arguments: [
+        var arguments = [
             "roll", "set-base-frame",
             "--roll", roll.path,
             "--frame", frame.path,
-        ])
+        ]
+        if let region {
+            arguments += ["--region", region.argument]
+        }
+        return CLICommand(arguments: arguments)
     }
 
     /// `scanny-boy roll set-flatfield-reference --roll DIR --frame FILE [--rig PROFILE_ID]`

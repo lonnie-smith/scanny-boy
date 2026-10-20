@@ -106,6 +106,9 @@ final class ConfigurationModel {
     private(set) var filmBase: FilmBase?
     private(set) var baseFrameError: Issue?
     private(set) var isAttachingBaseFrame = false
+    /// The frame last offered as a base frame on this roll, whether or not
+    /// it passed, so the user can select its area of clear rebate.
+    private(set) var lastBaseFrameURL: URL?
 
     /// The roll's attached flat-field reference, read from `roll info` when
     /// `rollURL` changes. Required before Convert.
@@ -255,8 +258,15 @@ final class ConfigurationModel {
             && !selectedFiles.isEmpty
             && rollURL != nil
             && filmKind != nil
-            && filmBase != nil
+            && (filmBase != nil || !requiresBaseFrame)
             && flatField != nil
+    }
+
+    /// A silver black-and-white roll needs no base frame: the CLI collapses
+    /// it to one channel, which never reads the base frame's 3-channel
+    /// colour anchor (`stitch` accepts such a roll without one).
+    var requiresBaseFrame: Bool {
+        filmKind != FilmKindChoice.monochrome.rawValue
     }
 
     /// Where one catalogue entry lives on disk, for display only.
@@ -356,16 +366,18 @@ final class ConfigurationModel {
 
     /// Attaches or replaces the roll's film-base reference immediately —
     /// gate failures surface inline, not at Convert.
-    func attachBaseFrame(at frameURL: URL) async {
+    func attachBaseFrame(at frameURL: URL, region: BaseFrameRegion? = nil) async {
         guard let rollURL else { return }
         baseFrameError = nil
+        lastBaseFrameURL = frameURL
         isAttachingBaseFrame = true
         defer { isAttachingBaseFrame = false }
 
         let result = await Self.runSetBaseFrame(
             runner: runner,
             roll: rollURL,
-            frame: frameURL
+            frame: frameURL,
+            region: region
         )
         for warning in result.warnings {
             selectionWarnings.append(warning)
@@ -439,6 +451,7 @@ final class ConfigurationModel {
         rollTask?.cancel()
         filmBase = nil
         baseFrameError = nil
+        lastBaseFrameURL = nil
         flatField = nil
         flatFieldReferenceError = nil
         filmKind = nil
@@ -775,13 +788,14 @@ final class ConfigurationModel {
     private static func runSetBaseFrame(
         runner: CLIRunner,
         roll: URL,
-        frame: URL
+        frame: URL,
+        region: BaseFrameRegion?
     ) async -> SetBaseFrameResult {
         var result = SetBaseFrameResult()
         var succeeded = false
         do {
             let session = runner.session(
-                for: .rollSetBaseFrame(roll: roll, frame: frame)
+                for: .rollSetBaseFrame(roll: roll, frame: frame, region: region)
             )
             for await output in try await session.start() {
                 switch output {

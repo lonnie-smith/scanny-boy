@@ -252,6 +252,9 @@ struct BaseFrameField: View {
     let onReplace: () -> Void
     let onDropFrame: (URL) -> Void
     let fileURL: (String) -> URL?
+    /// Opens `BaseFrameRegionSheet` on the frame last offered; `nil` when
+    /// no frame has been offered on this roll yet.
+    var onSelectRegion: (() -> Void)?
 
     @State private var isDropTarget = false
 
@@ -273,6 +276,10 @@ struct BaseFrameField: View {
                 }
                 if let error {
                     IssueLabel(issue: error, style: .error)
+                }
+                if let onSelectRegion, filmBase?.lockedAt == nil {
+                    Button("Select Area of Clear Base…") { onSelectRegion() }
+                        .disabled(isBusy)
                 }
             }
         }
@@ -340,7 +347,7 @@ struct BaseFrameField: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         if let percent = filmBase.areaFractionPercent {
-            Text("rebate: \(percent)% of frame")
+            Text("rebate: \(percent)% of \(filmBase.isRegion ? "selected area" : "frame")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -376,9 +383,9 @@ struct BaseFrameField: View {
 
     private static let captureInstructions = """
         Frame a piece of leader (or any stretch where clear rebate dominates \
-        the frame). Keep bare light and sprocket holes out of the frame. \
-        Expose at the same shutter, aperture and ISO as your scans, clear \
-        of clipping.
+        the frame), or use any frame showing a strip of clear rebate and \
+        select that strip. Keep bare light and sprocket holes out. Expose at \
+        the same shutter, aperture and ISO as your scans, clear of clipping.
         """
 
     private static func formatLockDate(_ iso: String) -> String {

@@ -2496,6 +2496,20 @@ def test_mono_roll_publishes_one_channel_and_density_grey_profile(tmp_path):
     assert repo.net_edit_state(out_dir, roll.negatives[0].negative_id).scratches is None
 
 
+def test_mono_roll_stitches_without_a_base_frame(work_dir, tmp_path):
+    """A monochrome roll never reads the film-base density (its one
+    collapsed channel cannot take a 3-channel anchor), so it stitches with
+    no base frame attached — and a colour roll still refuses."""
+    out_dir = make_roll_dir(tmp_path, "mono", film_kind="monochrome")
+    mutate_roll_manifest(out_dir, lambda fresh: setattr(fresh, "film_base", None))
+
+    assert run_stitch_with_defaults(work_dir, out_dir).status == "complete"
+
+    roll = load_roll_manifest(out_dir)
+    assert roll.film_base is None
+    assert len(roll.negatives) == 1
+
+
 def test_film_kind_required_when_roll_has_no_film_block(tmp_path):
     """An unseeded roll with no `film` block cannot be stitched."""
     work_dir = make_work_dir(tmp_path)

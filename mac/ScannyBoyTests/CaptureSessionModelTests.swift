@@ -135,6 +135,20 @@ struct CaptureSessionModelTests {
         #expect(model.runEnabled == false)
     }
 
+    @Test("a silver B&W roll can capture without a base frame")
+    func monochromeNeedsNoBaseFrame() async {
+        let (model, _, _) = Self.makeModel()
+        model.filmBase = nil
+        await model.refreshConnection()
+        #expect(model.runEnabled == false)
+        #expect(model.startBlockedReason == "Capture a base frame before capturing.")
+
+        model.filmKind = "monochrome"
+        #expect(model.requiresBaseFrame == false)
+        #expect(model.runEnabled == true)
+        #expect(model.startBlockedReason == nil)
+    }
+
     @Test("startBlockedReason names the first missing prerequisite")
     func startBlockedReasonNamesMissingPrerequisite() async {
         let (model, _, _) = Self.makeModel()
@@ -471,8 +485,68 @@ struct CaptureSessionModelTests {
         }
         #expect(model.completedNegatives.count >= 2)
         #expect(model.sequencePhase == .running)
+        // §3.2: on a 1×1 grid every shot is the last, so a pause lets an
+        // in-flight shot finish and then goes idle — and one before the
+        // shot fires goes idle at once. Either way nothing is left open.
         model.handleSpace()
-        #expect(model.sequencePhase == .paused)
+        try await Self.waitUntil({ model.sequencePhase == .idle }, timeout: .seconds(15))
+        #expect(model.holdsRoll == false)
+    }
+
+    @Test("pausing auto-advance before its shot fires returns to idle")
+    func autoAdvancePauseDuringCountdownGoesIdle() async throws {
+        let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)
+        model.autoAdvanceEnabled = true
+        model.intervalSeconds = 10
+        await model.connect()
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.sequencePhase == .running)
+        #expect(model.holdsRoll == true)
+
+        // The end of a roll: the operator pauses during the countdown of a
+        // negative auto-advance opened. There is nothing to resume, so the
+        // roll must not stay held (sidebar locked) by an empty pause.
+        model.handleSpace()
+        #expect(model.sequencePhase == .idle)
+        #expect(model.countdownText.isEmpty)
+        #expect(model.holdsRoll == false)
+        #expect(model.isSessionOpen == true)
+    }
+
+    @Test("a connected, idle camera does not hold the roll")
+    func connectedIdleCameraDoesNotHoldRoll() async throws {
+        let (model, _, _) = Self.makeModel()
+        await model.connect()
+        await model.waitForLeftoverClaim()
+        #expect(model.isSessionOpen == true)
+        #expect(model.holdsRoll == false)
+    }
+
+    @Test("switching rolls between negatives drops the last roll's negatives")
+    func rollSwitchResetsSessionState() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll-a", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.autoAdvanceEnabled = false
+        await model.connect()
+        model.handleSpace()
+        try await Self.waitUntil(
+            { model.completedNegatives.count == 1 && model.sequencePhase == .idle },
+            timeout: .seconds(15)
+        )
+
+        // A transient nil (a selection waiting on a rescan) and the same
+        // roll coming back are not a switch.
+        model.rollURL = nil
+        model.rollURL = directory.appending(path: "roll-a", directoryHint: .isDirectory)
+        #expect(model.completedNegatives.count == 1)
+
+        model.rollURL = directory.appending(path: "roll-b", directoryHint: .isDirectory)
+        #expect(model.completedNegatives.isEmpty)
+        #expect(model.hasUnpublishedCaptureWork(publishedNegativeIDs: []) == false)
     }
 
     @Test("auto-advance is ignored for a multi-frame grid")
@@ -615,6 +689,8 @@ struct CaptureSessionModelTests {
     @Test("initial interval replays when resuming before cell 1 fires")
     func initialIntervalReplaysBeforeCell1Fires() async throws {
         let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)
+        // Without auto-advance: with it, a pause before the shot goes idle.
+        model.autoAdvanceEnabled = false
         model.intervalSeconds = 10
         await model.connect()
         model.handleSpace()

@@ -303,7 +303,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 26
+      "const": 27
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {

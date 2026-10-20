@@ -44,6 +44,7 @@ struct ContentView: View {
     @State private var isPresentingNewRollSheet = false
     @State private var isPresentingFlatFieldProfiles = false
     @State private var isPresentingGridProfiles = false
+    @State private var isSelectingBaseFrameRegion = false
     @State private var isConfirmingConvert = false
     @State private var pendingConvertAfterNewRoll = false
     @State private var isConvertDropTarget = false
@@ -331,10 +332,10 @@ struct ContentView: View {
         library.rolls.first { $0.id == selection }
     }
 
-    /// Read `capture.isSessionOpen` here so sidebar lock state tracks the
+    /// Read `capture.holdsRoll` here so sidebar lock state tracks the
     /// capture model directly, not only through `AppActivity`.
     private var sidebarSelectionLocked: Bool {
-        capture.isSessionOpen || capture.sequencePhase != .idle || activity.isBusy
+        capture.holdsRoll || activity.isBusy
     }
 
     private var addScansStage: some View {
@@ -615,18 +616,15 @@ struct ContentView: View {
                     Task { await model.setFilmKind(choice.rawValue) }
                 }
             )
-            BaseFrameField(
-                filmBase: model.filmBase,
-                isBusy: activity.isBusy,
-                isAnalyzing: model.isAttachingBaseFrame,
-                error: model.baseFrameError,
-                onChoose: { chooseBaseFrame(replace: false) },
-                onReplace: { chooseBaseFrame(replace: true) },
-                onDropFrame: { url in
-                    Task { await model.attachBaseFrame(at: url) }
-                },
-                fileURL: model.fileURL(for:)
-            )
+            if model.filmBase == nil, !model.requiresBaseFrame {
+                LabeledContent("Film Base reference") {
+                    Text(CaptureStageView.baseFrameNotNeeded)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                baseFrameField
+            }
             // The roll's Format and Auto-crop: the same stored values the
             // Capture sheet edits (`RollFormatFields`).
             RollFormatFields(model: model)
@@ -674,6 +672,34 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var baseFrameField: some View {
+        BaseFrameField(
+            filmBase: model.filmBase,
+            isBusy: activity.isBusy,
+            isAnalyzing: model.isAttachingBaseFrame,
+            error: model.baseFrameError,
+            onChoose: { chooseBaseFrame(replace: false) },
+            onReplace: { chooseBaseFrame(replace: true) },
+            onDropFrame: { url in
+                Task { await model.attachBaseFrame(at: url) }
+            },
+            fileURL: model.fileURL(for:),
+            onSelectRegion: selectBaseFrameRegion
+        )
+        .sheet(isPresented: $isSelectingBaseFrameRegion) {
+            if let url = model.lastBaseFrameURL {
+                BaseFrameRegionSheet(frameURL: url) { region in
+                    Task { await model.attachBaseFrame(at: url, region: region) }
+                }
+            }
+        }
+    }
+
+    private var selectBaseFrameRegion: (() -> Void)? {
+        guard model.lastBaseFrameURL != nil else { return nil }
+        return { isSelectingBaseFrameRegion = true }
     }
 
     private var convertSection: some View {

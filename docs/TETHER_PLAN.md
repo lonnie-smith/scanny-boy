@@ -430,7 +430,7 @@ Scans, camera-named files) keeps the plain stem rule.
 
 | Field | Source | Notes |
 |---|---|---|
-| Roll | Sidebar selection | Locked while a session is open or its queue is non-empty (§4.2) |
+| Roll | Sidebar selection | Locked while capture holds the roll — an open negative, a one-shot, or an unresolved leftover (§4.2) |
 | Film kind | `probe --roll` | Required, as for Add Scans |
 | Base frame | `probe --roll`'s `film_base` | Required before the first negative; shot here if absent (§1) |
 | Bare-light reference | `roll info`'s `flat_field` | Required before the first negative; shot here if absent (§1) |
@@ -481,7 +481,9 @@ Rules:
   when a negative completes while the sequence is still running, the next
   negative starts at once — initial countdown, one shot, repeat — until the
   operator pauses (Space) or stops (Esc), or a shot fails. A pause during the
-  final shot lets that frame finish and then goes idle rather than rolling on.
+  final shot lets that frame finish and then goes idle rather than rolling on;
+  a pause before the shot fires (the countdown at the end of a roll) goes idle
+  at once, since the negative auto-advance opened holds nothing to resume.
 
 Keys, active only when the Capture stage has focus and no text field does:
 
@@ -662,7 +664,12 @@ Capture tab for the whole of every stitch. The rule becomes:
   field, roll rename and delete, Add Scans' Convert, and Export (§4.3).
 - **The Capture stage stays live**, and so do its analysis daemon (§6.1) and
   the prepares and checks (§4.1), none of which writes the roll.
-- The sidebar stays on the capturing roll while its session is open.
+- The sidebar stays on the capturing roll while capture holds it: a negative
+  is open (running, paused, stopped, or left open by a drop), a one-shot or
+  check shot is in flight, or a leftover awaits a decision. A camera that is
+  merely connected between negatives holds nothing, so the operator can move
+  to the next roll without disconnecting; the roll's own finished negatives
+  stay in the stitch queue, which tracks them by roll.
 
 DECISIONS.md gets this as an amendment to the Phase 3 app rule.
 

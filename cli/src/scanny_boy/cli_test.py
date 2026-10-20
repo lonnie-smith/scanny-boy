@@ -599,7 +599,8 @@ def test_roll_set_base_frame_attaches_on_an_absent_roll(capsys, tmp_path, monkey
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
 
     status = _set_base_frame(capsys, roll_dir, frame)
@@ -635,6 +636,39 @@ def test_roll_set_base_frame_attaches_on_an_absent_roll(capsys, tmp_path, monkey
     assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
 
 
+def test_roll_set_base_frame_measures_inside_a_region(capsys, tmp_path, monkeypatch):
+    from scanny_boy import film_base
+
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    seen = []
+
+    def load(_frame, _gain, region=None):
+        seen.append(region)
+        return _base_measurement()
+
+    monkeypatch.setattr("scanny_boy.film_base.load", load)
+
+    assert _set_base_frame(capsys, roll_dir, frame, "--region", "0.1,0,0.6,0.25") == 0
+    assert seen == [film_base.Region(0.1, 0.0, 0.6, 0.25)]
+    manifest = load_roll_manifest(roll_dir)
+    assert manifest.film_base["region"] == [0.1, 0.0, 0.6, 0.25]
+    assert_matches_roll_manifest_schema(manifest.to_dict(), load_roll_manifest_schema())
+
+    # Without --region the whole frame is measured, recorded as null.
+    capsys.readouterr()
+    assert _set_base_frame(capsys, roll_dir, frame) == 0
+    assert seen[-1] is None
+    assert load_roll_manifest(roll_dir).film_base["region"] is None
+
+
+def test_roll_set_base_frame_rejects_a_malformed_region(capsys, tmp_path):
+    roll_dir = _init_roll(capsys, tmp_path)
+    frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
+    assert _set_base_frame(capsys, roll_dir, frame, "--region", "0.6,0,0.1,1") == 2
+    assert load_roll_manifest(roll_dir).film_base is None
+
+
 def test_roll_set_base_frame_replaces_on_an_attached_roll(
     capsys, tmp_path, monkeypatch
 ):
@@ -642,7 +676,8 @@ def test_roll_set_base_frame_replaces_on_an_attached_roll(
     first = write_fake_nef(tmp_path / "_DSC5012.NEF")
     second = write_fake_nef(tmp_path / "_DSC5013.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
 
     assert _set_base_frame(capsys, roll_dir, first) == 0
@@ -660,7 +695,8 @@ def test_roll_set_base_frame_refuses_a_locked_roll(capsys, tmp_path, monkeypatch
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
     assert _set_base_frame(capsys, roll_dir, frame) == 0
     capsys.readouterr()
@@ -690,7 +726,7 @@ def test_roll_set_base_frame_keeps_a_change_committed_during_the_measurement(
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
 
-    def measure_while_another_writer_commits(_frame, _gain):
+    def measure_while_another_writer_commits(_frame, _gain, region=None):
         set_setup(roll_dir, format="6x7")
         return _base_measurement()
 
@@ -713,12 +749,13 @@ def test_roll_set_base_frame_refuses_a_lock_that_appears_after_the_early_check(
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
     assert _set_base_frame(capsys, roll_dir, frame) == 0
     capsys.readouterr()
 
-    def measure_while_a_publish_locks_the_base(_frame, _gain):
+    def measure_while_a_publish_locks_the_base(_frame, _gain, region=None):
         def lock(fresh):
             fresh.film_base["locked_at"] = "2026-09-06T19:00:00Z"
 
@@ -898,7 +935,8 @@ def test_roll_set_base_frame_gate_failure_changes_nothing_on_disk(
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
 
     def _too_small(_measurement):
@@ -949,7 +987,8 @@ def test_roll_set_base_frame_warns_on_camera_conflict(capsys, tmp_path, monkeypa
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
     monkeypatch.setattr(
         "scanny_boy.metadata.read_source_settings",
@@ -990,7 +1029,8 @@ def test_roll_info_reports_the_film_base_block(capsys, tmp_path, monkeypatch):
     roll_dir = _init_roll(capsys, tmp_path)
     frame = write_fake_nef(tmp_path / "_DSC5012.NEF")
     monkeypatch.setattr(
-        "scanny_boy.film_base.load", lambda _frame, _gain: _base_measurement()
+        "scanny_boy.film_base.load",
+        lambda _frame, _gain, region=None: _base_measurement(),
     )
     assert _set_base_frame(capsys, roll_dir, frame) == 0
     capsys.readouterr()

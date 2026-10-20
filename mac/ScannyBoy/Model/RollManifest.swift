@@ -39,6 +39,9 @@ struct FilmBase: Sendable, Hashable {
     let lockedAt: String?
     let sourceName: String
     let populations: [Population]
+    /// Measured inside an area the user selected (`--region`) rather than
+    /// the whole frame; `areaFractionPercent` is then of that area.
+    let isRegion: Bool
 
     /// The chosen population's rebate area as a percentage for display.
     var areaFractionPercent: Int? {
@@ -80,6 +83,7 @@ struct FilmBase: Sendable, Hashable {
         self.lockedAt = fields["locked_at"]?.stringValue
         self.sourceName = sourceName
         self.populations = populations
+        self.isRegion = fields["region"]?.arrayValue != nil
     }
 }
 

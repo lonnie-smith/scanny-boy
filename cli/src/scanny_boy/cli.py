@@ -144,6 +144,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     roll_set_base.add_argument("--roll", required=True, metavar="DIR")
     roll_set_base.add_argument("--frame", required=True, metavar="FILE")
+    roll_set_base.add_argument(
+        "--region",
+        type=_film_base_region,
+        metavar="X0,Y0,X1,Y1",
+        help=(
+            "Measure only this rectangle of the frame, in fractions of its "
+            "width and height — for a frame where the clear rebate is a "
+            "strip rather than most of the picture."
+        ),
+    )
 
     roll_set_flatfield = roll_subparsers.add_parser(
         "set-flatfield-reference",
@@ -928,6 +938,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _film_base_region(text: str):
+    """argparse `type` for `roll set-base-frame --region`."""
+    from scanny_boy.film_base import Region
+
+    try:
+        return Region.parse(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _exit_code(exc: SystemExit) -> int:
     return exc.code if isinstance(exc.code, int) else 2
 
@@ -1598,7 +1618,7 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
     # Measure, then gate. The measurement is recorded nowhere on a gate
     # failure: §3.2 rule 1 changes nothing on disk unless the frame passed.
     try:
-        measurement = film_base.load(frame, gain_map)
+        measurement = film_base.load(frame, gain_map, region=args.region)
         film_base.gate(measurement)
     except film_base.FilmBaseError as exc:
         writer.write(ErrorEvent(code=exc.code, message=exc.message))
@@ -1665,6 +1685,9 @@ def _run_roll_set_base_frame(args, writer: EventWriter) -> int:
         "clipped_fractions": list(measurement.clipped_fractions),
         "grid_cells": measurement.grid_cells,
         "measure_version": measurement.measure_version,
+        # The rectangle the measurement was confined to (`--region`), in
+        # fractions of the frame, or None for the whole frame.
+        "region": None if args.region is None else args.region.as_list(),
         # docs/ROLL_HIGHLIGHT_LOCK.md §3: the base frame's own EXIF
         # exposure, or None per field when unreadable — compared against
         # each scan's at stitch time.
