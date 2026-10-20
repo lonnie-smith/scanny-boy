@@ -77,12 +77,16 @@ struct RollLibraryTests {
         reason: String = "null",
         rollID: String? = "roll-1",
         rollName: String? = "Roll A",
-        negativeCount: Int? = 2
+        negativeCount: Int? = 2,
+        film: String? = nil,
+        format: String? = nil
     ) -> String {
+        let filmField = film.map { "\"\($0)\"" } ?? "null"
+        let formatField = format.map { "\"\($0)\"" } ?? "null"
         let idField = rollID.map { "\"\($0)\"" } ?? "null"
         let nameField = rollName.map { "\"\($0)\"" } ?? "null"
         let countField = negativeCount.map(String.init) ?? "null"
-        return #"{"path":"\#(path.path)","status":"\#(status)","reason":\#(reason),"roll_id":\#(idField),"roll_name":\#(nameField),"negative_count":\#(countField)}"#
+        return #"{"path":"\#(path.path)","status":"\#(status)","reason":\#(reason),"roll_id":\#(idField),"roll_name":\#(nameField),"negative_count":\#(countField),"film":\#(filmField),"format":\#(formatField)}"#
     }
 
     // MARK: - Scanning
@@ -483,5 +487,76 @@ struct RollLibraryTests {
         #expect(manifest.filmBase?.sourceName == "_DSC5012.NEF")
         #expect(manifest.filmBase?.lockedAt == "2026-09-06T19:00:00Z")
         #expect(manifest.filmBase?.areaFractionPercent == 44)
+    }
+
+    // MARK: - Film stock and format (protocol 28)
+
+    @Test("scan() decodes each roll's film stock and format")
+    func testScanDecodesFilmAndFormat() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let libraryBase = directory.appending(path: "library", directoryHint: .isDirectory)
+        let withBoth = libraryBase.appending(path: "Roll-A", directoryHint: .isDirectory)
+        let without = libraryBase.appending(path: "Roll-B", directoryHint: .isDirectory)
+        let executable = try Self.fakeRollExecutable(
+            in: directory,
+            listLines: [
+                Self.rollListEvent(entries: [
+                    Self.listingEntry(
+                        path: withBoth, film: "Kodak Portra 400", format: "6x6"),
+                    Self.listingEntry(
+                        path: without, rollID: "roll-2", rollName: "Roll B"),
+                ])
+            ]
+        )
+
+        let library = RollLibrary(
+            runner: CLIRunner(executable: executable),
+            libraryBase: libraryBase,
+            defaults: Self.isolatedDefaults()
+        )
+        library.scan()
+        await library.waitForScan()
+
+        #expect(library.rolls.count == 2)
+        #expect(library.rolls[0].film == "Kodak Portra 400")
+        #expect(library.rolls[0].format == "6x6")
+        #expect(library.rolls[0].filmSummary == "Kodak Portra 400 · 6×6")
+        #expect(library.rolls[1].film == nil)
+        #expect(library.rolls[1].format == nil)
+        #expect(library.rolls[1].filmSummary == nil)
+    }
+
+    @Test("the sidebar's film line joins whichever of stock and format are set")
+    func filmSummaryJoinsWhatIsSet() {
+        func roll(film: String?, format: String?) -> Roll {
+            Roll(
+                path: URL(filePath: "/tmp/roll"), status: .ok, reason: nil,
+                rollID: "r", rollName: "R", negativeCount: 1, film: film, format: format
+            )
+        }
+        #expect(roll(film: "Ilford HP5+", format: nil).filmSummary == "Ilford HP5+")
+        #expect(roll(film: nil, format: "35mm").filmSummary == "35mm")
+        #expect(roll(film: "Ilford HP5+", format: "half-frame").filmSummary == "Ilford HP5+ · Half Frame")
+        #expect(roll(film: nil, format: nil).filmSummary == nil)
+        #expect(roll(film: "", format: nil).filmSummary == nil)
+        // A format this build does not know is left out rather than shown raw.
+        #expect(roll(film: "Ilford HP5+", format: "8x10").filmSummary == "Ilford HP5+")
+    }
+
+    @Test("a roll_list entry from before protocol 28 decodes with no film or format")
+    func entryWithoutFilmFieldsDecodes() throws {
+        let fields = try #require(
+            try JSONDecoder().decode(
+                JSONValue.self,
+                from: Data(
+                    #"{"path":"/tmp/r","status":"ok","reason":null,"roll_id":"r","roll_name":"R","negative_count":3}"#
+                        .utf8)
+            ).objectValue
+        )
+        let roll = try #require(Roll(fields: fields))
+        #expect(roll.film == nil)
+        #expect(roll.format == nil)
+        #expect(roll.negativeCount == 3)
     }
 }

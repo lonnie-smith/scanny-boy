@@ -20,6 +20,20 @@ from scanny_boy.roll_manifest import (
     write_roll_manifest,
 )
 
+# The stocks migration 0020 seeds into the `film` catalog, in listed order.
+FILM_STOCK_SEEDS = [
+    ("Kodak Ultramax 400", "colour"),
+    ("Kodak Gold 200", "colour"),
+    ("Kodak Portra 160", "colour"),
+    ("Kodak Portra 400", "colour"),
+    ("Kodak Tri-X 400", "monochrome"),
+    ("Kodak TMax 400", "monochrome"),
+    ("Kodak TMax P3200", "monochrome"),
+    ("Ilford HP5+", "monochrome"),
+    ("Ilford FP4+", "monochrome"),
+    ("Ilford Delta 3200", "monochrome"),
+]
+
 
 @pytest.fixture()
 def roll_dir(tmp_path: Path) -> Path:
@@ -64,6 +78,59 @@ def test_open_engine_refuses_a_revision_it_does_not_know(monkeypatch, tmp_path):
         db.open_engine()
     assert "9999" in excinfo.value.message
     assert excinfo.value.code.name == "LIBRARY_DB_UNSUPPORTED"
+
+
+# --- the film-stock catalog (migration 0020) --------------------------------
+
+
+def test_film_stock_seeds_are_listed_in_order_with_kinds():
+    assert repo.list_metadata_values("film") == [s for s, _ in FILM_STOCK_SEEDS]
+    assert repo.list_metadata_value_kinds("film") == dict(FILM_STOCK_SEEDS)
+    # Other fields are not seeded and carry no kinds.
+    assert repo.list_metadata_values("city") == []
+    assert repo.list_metadata_value_kinds("city") == {}
+
+
+def test_user_values_outrank_seeds_and_carry_no_kind():
+    repo.upsert_metadata_values("film", ["Cinestill 800T"])
+    values = repo.list_metadata_values("film")
+    assert values[0] == "Cinestill 800T"
+    assert values[1:] == [s for s, _ in FILM_STOCK_SEEDS]
+    assert "Cinestill 800T" not in repo.list_metadata_value_kinds("film")
+
+
+def test_using_a_seeded_stock_bumps_it_and_preserves_its_kind():
+    repo.upsert_metadata_values("film", ["Ilford FP4+"])
+    values = repo.list_metadata_values("film")
+    assert values[0] == "Ilford FP4+"
+    assert len(values) == len(FILM_STOCK_SEEDS)
+    assert repo.list_metadata_value_kinds("film")["Ilford FP4+"] == "monochrome"
+
+
+def test_migration_0020_keeps_a_typed_stock_and_fills_its_kind():
+    import sqlite3
+
+    # Rewind the per-test database to revision 0019 with a seeded stock
+    # already typed by the user, then let `open_engine` upgrade it.
+    db.open_engine()
+    path = db.library_db_path()
+    db.reset_engine_cache()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM metadata_values")
+        connection.execute("ALTER TABLE metadata_values DROP COLUMN film_kind")
+        connection.execute(
+            "INSERT INTO metadata_values (field, value, last_used_at) VALUES "
+            "('film', 'Kodak Portra 400', '2026-05-05T10:00:00.000000Z')"
+        )
+        connection.execute("UPDATE alembic_version SET version_num = '0019'")
+
+    db.open_engine()
+
+    values = repo.list_metadata_values("film")
+    assert values[0] == "Kodak Portra 400"  # its own recent timestamp survives
+    assert values.count("Kodak Portra 400") == 1
+    assert values[1:] == [s for s, _ in FILM_STOCK_SEEDS if s != "Kodak Portra 400"]
+    assert repo.list_metadata_value_kinds("film")["Kodak Portra 400"] == "colour"
 
 
 # --- rows written before gain normalization -------------------------------

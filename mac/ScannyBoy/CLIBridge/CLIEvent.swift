@@ -82,7 +82,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// Protocol 27 adds `roll set-base-frame --region` and the film-base
     /// block's `region` field, and lets a monochrome roll stitch without a
     /// base frame.
-    public static let supportedProtocolVersion = 27
+    ///
+    /// Protocol 28 adds the film-stock catalog: `metadata_values` for the
+    /// `film` field carries a `film_kinds` map, and each `roll_list` entry
+    /// carries the roll's `film` and `format`.
+    public static let supportedProtocolVersion = 28
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -334,6 +338,12 @@ extension CLIEvent {
     public var metadataField: String? { fields["field"]?.stringValue }
     public var metadataFieldValues: [String]? {
         fields["values"]?.arrayValue?.compactMap { $0.stringValue }
+    }
+    /// Protocol 28: present only when `field` is `film` — stock name to
+    /// `colour` / `monochrome` for every returned value with a known kind
+    /// (a user-typed stock has no entry).
+    public var metadataFilmKinds: [String: String]? {
+        fields["film_kinds"]?.objectValue?.compactMapValues { $0.stringValue }
     }
 
     // `progress` and `item_done`

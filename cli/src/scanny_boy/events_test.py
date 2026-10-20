@@ -308,7 +308,18 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 27
+    assert PROTOCOL_VERSION == 28
+
+
+def test_metadata_values_film_kinds_only_serialised_when_present():
+    plain = MetadataValues(field="city", values=["Porto"]).to_dict()
+    assert "film_kinds" not in plain
+    film = MetadataValues(
+        field="film", values=["Kodak Gold 200"], film_kinds={"Kodak Gold 200": "colour"}
+    ).to_dict()
+    assert film["film_kinds"] == {"Kodak Gold 200": "colour"}
+    empty = MetadataValues(field="film", values=[], film_kinds={}).to_dict()
+    assert empty["film_kinds"] == {}
 
 
 def test_new_event_kinds_round_trip():

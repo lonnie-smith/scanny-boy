@@ -383,14 +383,17 @@ def roll_id_for_folder(roll_dir: Path) -> str:
         return roll.roll_id
 
 
-def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
+def registered_rolls_under(
+    library: Path,
+) -> list[tuple[str, str, str, int, str | None, str | None]]:
     """Every registered roll whose folder sits directly under `library`:
-    `(folder_path, roll_id, roll_name, negative_count)`, sorted by folder
-    path."""
+    `(folder_path, roll_id, roll_name, negative_count, film, format)`,
+    sorted by folder path. `film` is the roll's film-stock string and
+    `format` its `setup["format"]`; each is None when unset."""
     prefix = str(library.resolve())
     with _session() as session:
         rolls = session.scalars(select(RollRow)).all()
-        listing: list[tuple[str, str, str, int]] = []
+        listing: list[tuple[str, str, str, int, str | None, str | None]] = []
         for roll in rolls:
             if str(Path(roll.folder_path).parent) != prefix:
                 continue
@@ -399,7 +402,17 @@ def registered_rolls_under(library: Path) -> list[tuple[str, str, str, int]]:
                 .select_from(NegativeRow)
                 .where(NegativeRow.roll_id == roll.roll_id)
             )
-            listing.append((roll.folder_path, roll.roll_id, roll.roll_name, count or 0))
+            roll_format = (roll.setup or {}).get("format")
+            listing.append(
+                (
+                    roll.folder_path,
+                    roll.roll_id,
+                    roll.roll_name,
+                    count or 0,
+                    roll.film,
+                    roll_format if isinstance(roll_format, str) else None,
+                )
+            )
         listing.sort(key=lambda entry: entry[0])
         return listing
 
@@ -1695,7 +1708,8 @@ def upsert_metadata_values(field: str, values: list[str]) -> None:
     """Remembers each value as a catalog entry for `field`, bumping
     `last_used_at` for entries that already exist. Idempotent per (field,
     value) pair — the catalog records *that* a value was used, not how
-    often."""
+    often. An existing row's `film_kind` is never touched; a new row gets
+    NULL."""
     from scanny_boy.roll_manifest import _now_iso
 
     with _session() as session:
@@ -1724,3 +1738,17 @@ def list_metadata_values(field: str) -> list[str]:
             .limit(METADATA_VALUES_LIMIT)
         ).all()
         return [row.value for row in rows]
+
+
+def list_metadata_value_kinds(field: str) -> dict[str, str]:
+    """`value -> film kind` for the catalog values `list_metadata_values`
+    returns for `field` (same ordering and limit) that carry a kind. Values
+    with a NULL kind are absent."""
+    with _session() as session:
+        rows = session.scalars(
+            select(MetadataValueRow)
+            .where(MetadataValueRow.field == field)
+            .order_by(MetadataValueRow.last_used_at.desc(), MetadataValueRow.id.desc())
+            .limit(METADATA_VALUES_LIMIT)
+        ).all()
+        return {row.value: row.film_kind for row in rows if row.film_kind is not None}

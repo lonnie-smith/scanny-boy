@@ -349,6 +349,10 @@ def test_scan_library_reports_ok_and_vanished_side_by_side(tmp_path):
     assert by_path[vanished_dir].reason[0] == "ROLL_NOT_FOUND"
     assert by_path[vanished_dir].roll_id is None
     assert by_path[vanished_dir].negative_count is None
+    assert by_path[vanished_dir].film is None
+    assert by_path[vanished_dir].format is None
+    assert by_path[ok_dir].film is None
+    assert by_path[ok_dir].format is None
 
 
 def test_scan_library_negative_count_is_every_negative(tmp_path):

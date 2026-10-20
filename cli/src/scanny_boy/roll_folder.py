@@ -67,6 +67,8 @@ class RollListing:
     roll_id: str | None
     roll_name: str | None
     negative_count: int | None
+    film: str | None = None
+    format: str | None = None
 
 
 def slugify(name: str) -> str:
@@ -319,9 +321,14 @@ def scan_library(library: Path) -> list[RollListing]:
     unmounted external drive, a manual delete) becomes an `"unreadable"`
     listing rather than silently disappearing."""
     listings: list[RollListing] = []
-    for folder_path, roll_id, roll_name, negative_count in repo.registered_rolls_under(
-        library
-    ):
+    for (
+        folder_path,
+        roll_id,
+        roll_name,
+        negative_count,
+        film,
+        roll_format,
+    ) in repo.registered_rolls_under(library):
         if not Path(folder_path).is_dir():
             listings.append(
                 RollListing(
@@ -342,6 +349,8 @@ def scan_library(library: Path) -> list[RollListing]:
                 roll_id=roll_id,
                 roll_name=roll_name,
                 negative_count=negative_count,
+                film=film,
+                format=roll_format,
             )
         )
     return listings

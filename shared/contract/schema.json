@@ -286,7 +286,16 @@
     },
     "rollListingEntry": {
       "type": "object",
-      "required": ["path", "status", "reason", "roll_id", "roll_name", "negative_count"],
+      "required": [
+        "path",
+        "status",
+        "reason",
+        "roll_id",
+        "roll_name",
+        "negative_count",
+        "film",
+        "format"
+      ],
       "properties": {
         "path": { "type": "string" },
         "status": { "type": "string", "enum": ["ok", "unreadable"] },
@@ -295,7 +304,15 @@
         },
         "roll_id": { "type": ["string", "null"] },
         "roll_name": { "type": ["string", "null"] },
-        "negative_count": { "type": ["integer", "null"], "minimum": 0 }
+        "negative_count": { "type": ["integer", "null"], "minimum": 0 },
+        "film": {
+          "type": ["string", "null"],
+          "description": "The roll's film-stock string (`rolls.film`); null when unset or the roll is unreadable."
+        },
+        "format": {
+          "type": ["string", "null"],
+          "description": "The roll's setup format (`setup.format`); null when unset or the roll is unreadable."
+        }
       }
     }
   },
@@ -303,7 +320,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 27
+      "const": 28
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -929,6 +946,11 @@
             "type": "array",
             "items": { "type": "string" },
             "description": "Previously-entered values, most-recently-used first."
+          },
+          "film_kinds": {
+            "type": "object",
+            "additionalProperties": { "enum": ["colour", "monochrome"] },
+            "description": "Present only when `field` is `film`: stock name to film kind for every returned value that has one (possibly empty)."
           }
         }
       }

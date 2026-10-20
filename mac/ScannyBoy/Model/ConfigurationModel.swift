@@ -124,6 +124,24 @@ final class ConfigurationModel {
     private(set) var filmKindError: Issue?
     private(set) var isSettingFilmKind = false
 
+    /// The roll's film stock (roll-level `film` metadata), read from `roll
+    /// info` when `rollURL` changes and written through `metadata set`. Free
+    /// text: any value commits, and a new one is saved to the catalog by the
+    /// CLI. Committing a stock the catalog knows the kind of also sets
+    /// `filmKind` unless that is locked (`applyFilmKind(forStock:)`).
+    private(set) var filmStock: String?
+    private(set) var filmStockError: Issue?
+    private(set) var isSettingFilmStock = false
+    /// The film catalog behind the Film field's suggestions and dropdown,
+    /// from `metadata values --field film`: most-recently-used first, with
+    /// the kind of every stock that has one.
+    private(set) var filmCatalog = FilmCatalog()
+
+    /// Called after the roll's film stock or format changed on disk, so the
+    /// sidebar (`roll list`) and the Edit/Metadata roll copy do not go
+    /// stale. Wired by `ContentView`.
+    @ObservationIgnored var onRollDetailsChanged: (() -> Void)?
+
     /// The roll's saved setup defaults — grid, interval, and film format —
     /// read from `roll info` when `rollURL` changes and set via
     /// `roll set-setup`. Pre-fill hints only, editable at any time (unlike
@@ -340,7 +358,104 @@ final class ConfigurationModel {
         baseFrameError = nil
         flatFieldReferenceError = nil
         filmKindError = nil
+        filmStockError = nil
         isValidating = false
+    }
+
+    /// The film catalog (`metadata values --field film`): stock names,
+    /// most-recently-used first, and the kind of each one that has a kind.
+    struct FilmCatalog: Sendable, Equatable {
+        var stocks: [String] = []
+        var kinds: [String: String] = [:]
+
+        /// The kind (`colour` / `monochrome`) the catalog records for
+        /// `stock`, matched ignoring case and surrounding whitespace.
+        func kind(forStock stock: String) -> String? {
+            let wanted = stock.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let exact = kinds[wanted] { return exact }
+            return kinds.first {
+                $0.key.localizedCaseInsensitiveCompare(wanted) == .orderedSame
+            }?.value
+        }
+    }
+
+    /// The film kind choosing `stock` should set, or `nil` when the kind
+    /// must be left alone: it is locked (never even attempted), the stock is
+    /// unknown to the catalog (a user-typed stock), or the roll already has
+    /// that kind. The one place the rule lives, so Add Scans, Capture and
+    /// the Metadata stage cannot drift apart.
+    static func filmKindToApply(
+        forStock stock: String?,
+        catalog: FilmCatalog,
+        currentKind: String?,
+        isLocked: Bool
+    ) -> String? {
+        guard !isLocked, let stock, let kind = catalog.kind(forStock: stock),
+            FilmKindChoice(rawValue: kind) != nil, kind != currentKind
+        else { return nil }
+        return kind
+    }
+
+    /// Sets (or clears, with `nil` or empty text) the roll's film stock
+    /// immediately — a failure surfaces inline. On success the catalog is
+    /// re-read (the CLI saves a new stock to it) and the film kind follows
+    /// the stock where the catalog knows it.
+    func setFilmStock(_ stock: String?) async {
+        guard let rollURL else { return }
+        let stock = Self.normalizedFilmStock(stock)
+        filmStockError = nil
+        isSettingFilmStock = true
+        defer { isSettingFilmStock = false }
+
+        if let error = await Self.runSetFilmStock(runner: runner, roll: rollURL, stock: stock) {
+            filmStockError = error
+            return
+        }
+        guard self.rollURL == rollURL else { return }
+        filmStock = stock
+        await reloadFilmCatalog()
+        await applyFilmKind(forStock: stock)
+        onRollDetailsChanged?()
+    }
+
+    /// Takes in a film stock committed somewhere other than this model (the
+    /// Metadata stage's Film field, written through `EditModel`): mirrors
+    /// the value and routes it through the same film-kind rule. The caller
+    /// refreshes whatever else shows the roll.
+    func filmStockCommittedElsewhere(_ stock: String?) async {
+        filmStock = Self.normalizedFilmStock(stock)
+        await reloadFilmCatalog()
+        await applyFilmKind(forStock: filmStock)
+    }
+
+    /// Sets the film kind a just-committed `stock` implies, if the rule in
+    /// `filmKindToApply` says to.
+    func applyFilmKind(forStock stock: String?) async {
+        guard
+            let kind = Self.filmKindToApply(
+                forStock: stock,
+                catalog: filmCatalog,
+                currentKind: filmKind,
+                isLocked: filmKindLocked
+            )
+        else { return }
+        await setFilmKind(kind)
+    }
+
+    /// Re-reads the film catalog without waiting for it.
+    func refreshFilmCatalog() {
+        Task { await reloadFilmCatalog() }
+    }
+
+    func reloadFilmCatalog() async {
+        if let catalog = await Self.fetchFilmCatalog(runner: runner) {
+            filmCatalog = catalog
+        }
+    }
+
+    private static func normalizedFilmStock(_ stock: String?) -> String? {
+        let trimmed = stock?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Sets the roll's film kind immediately — gate failures surface inline,
@@ -457,6 +572,8 @@ final class ConfigurationModel {
         filmKind = nil
         filmKindLocked = false
         filmKindError = nil
+        filmStock = nil
+        filmStockError = nil
         rollGrid = nil
         rollIntervalSeconds = nil
         rollFormat = nil
@@ -469,6 +586,7 @@ final class ConfigurationModel {
             self.flatField = setup.flatField
             self.filmKind = setup.filmKind
             self.filmKindLocked = setup.filmKindLocked
+            self.filmStock = setup.filmStock
             self.rollGrid = setup.captureSetup?.grid
             self.rollIntervalSeconds = setup.captureSetup?.intervalSeconds
             self.rollFormat = setup.captureSetup?.format
@@ -556,6 +674,7 @@ final class ConfigurationModel {
         }
         rollFormat = format
         defaults.set(format.rawValue, forKey: Self.lastFilmFormatKey)
+        onRollDetailsChanged?()
     }
 
     /// Sets the roll's auto-crop flag immediately.
@@ -719,6 +838,7 @@ final class ConfigurationModel {
         var filmKind: String?
         var filmKindLocked: Bool
         var captureSetup: RollCaptureSetup?
+        var filmStock: String?
     }
 
     private static func fetchRollSetup(runner: CLIRunner, roll: URL) async -> RollSetup {
@@ -738,7 +858,8 @@ final class ConfigurationModel {
             flatField: manifest?.flatField,
             filmKind: manifest?.filmKind,
             filmKindLocked: !(manifest?.runs.isEmpty ?? true),
-            captureSetup: manifest?.captureSetup
+            captureSetup: manifest?.captureSetup,
+            filmStock: manifest?.metadata.film
         )
     }
 
@@ -873,6 +994,52 @@ final class ConfigurationModel {
             result.flatField = await fetchFlatField(runner: runner, roll: roll)
         }
         return result
+    }
+
+    /// `metadata set` with a roll-level `film` (`null` clears it). The CLI
+    /// saves a new value to the film catalog as part of the write.
+    private static func runSetFilmStock(
+        runner: CLIRunner,
+        roll: URL,
+        stock: String?
+    ) async -> Issue? {
+        let value: Any = stock ?? NSNull()
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: ["roll": ["film": value]]),
+            let payload = String(data: data, encoding: .utf8)
+        else { return nil }
+        var error: Issue?
+        do {
+            let session = runner.session(for: .metadataSet(roll: roll, payload: payload))
+            for await output in try await session.start() {
+                if case .event(let event) = output, event.kind == .error,
+                    let code = event.code, let message = event.message
+                {
+                    error = Issue(code: code, message: message)
+                }
+            }
+        } catch {
+            return nil
+        }
+        return error
+    }
+
+    /// `metadata values --field film`: the catalog's stocks (MRU first) and
+    /// their kinds. `nil` when the call produced no `metadata_values`.
+    private static func fetchFilmCatalog(runner: CLIRunner) async -> FilmCatalog? {
+        var catalog: FilmCatalog?
+        do {
+            let session = runner.session(for: .metadataValues(field: "film"))
+            for await output in try await session.start() {
+                guard case .event(let event) = output, event.kind == .metadataValues,
+                    let values = event.metadataFieldValues
+                else { continue }
+                catalog = FilmCatalog(stocks: values, kinds: event.metadataFilmKinds ?? [:])
+            }
+        } catch {
+            return nil
+        }
+        return catalog
     }
 
     private struct SetFilmKindResult: Sendable {

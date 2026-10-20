@@ -258,9 +258,11 @@ def _remember_catalog_values(
             repo.upsert_metadata_values(field, values)
 
 
-def run_metadata_values(field: str) -> list[str]:
-    """The catalog's values for one field, most-recently-used first — the
-    `metadata_values` event's list. Raises `MetadataEditFailure` for a
+def run_metadata_values(field: str) -> tuple[list[str], dict[str, str] | None]:
+    """The catalog's values for one field, most-recently-used first, and —
+    for field `film` only, else None — the film kind of each returned stock
+    that has one: the `metadata_values` event's `values` and `film_kinds`.
+    Raises `MetadataEditFailure` for a
     field the catalog does not track (`caption` included: prose is never
     offered back)."""
     if field not in CATALOG_FIELDS:
@@ -268,4 +270,8 @@ def run_metadata_values(field: str) -> list[str]:
             Code.INVALID_METADATA,
             f"--field must be one of {', '.join(CATALOG_FIELDS)}, got {field!r}",
         )
-    return repo.list_metadata_values(field)
+    values = repo.list_metadata_values(field)
+    if field != "film":
+        return values, None
+    kinds = repo.list_metadata_value_kinds(field)
+    return values, kinds

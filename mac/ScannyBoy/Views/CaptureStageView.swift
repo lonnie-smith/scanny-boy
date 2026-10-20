@@ -286,6 +286,16 @@ struct CaptureStageView: View {
                     .disabled(capture.sequencePhase != .idle)
                     .help("After each shot, count down and shoot the next negative until you pause.")
             }
+            FilmStockField(
+                filmStock: model.filmStock,
+                catalog: model.filmCatalog,
+                isBusy: activity.isBusy,
+                error: model.filmStockError,
+                onCommit: { stock in
+                    Task { await model.setFilmStock(stock) }
+                },
+                onAppear: { model.refreshFilmCatalog() }
+            )
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,

@@ -163,6 +163,16 @@ struct AddScansStageView: View {
                 },
                 fileURL: model.fileURL(for:)
             )
+            FilmStockField(
+                filmStock: model.filmStock,
+                catalog: model.filmCatalog,
+                isBusy: activity.isBusy,
+                error: model.filmStockError,
+                onCommit: { stock in
+                    Task { await model.setFilmStock(stock) }
+                },
+                onAppear: { model.refreshFilmCatalog() }
+            )
             FilmKindField(
                 filmKind: model.filmKind,
                 isLocked: model.filmKindLocked,

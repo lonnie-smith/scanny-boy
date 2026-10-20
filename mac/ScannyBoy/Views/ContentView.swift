@@ -376,7 +376,30 @@ struct ContentView: View {
         keyboard.isBusy = activity.isBusy
         keyboard.intake = presentedIntake?.kind
         installCaptureHandlers()
+        installRollDetailHandlers()
         wireCaptureToRoll()
+    }
+
+    /// The roll's film stock and format show in the sidebar and in the
+    /// Metadata stage's roll copy, so a change made on the Add Scans or
+    /// Capture sheet refreshes both; a film stock committed on the Metadata
+    /// stage goes the other way, through `ConfigurationModel`'s film-kind
+    /// rule, and rescans the sidebar.
+    private func installRollDetailHandlers() {
+        if model.onRollDetailsChanged == nil {
+            model.onRollDetailsChanged = { [edit, library] in
+                edit.refresh()
+                library.scan()
+            }
+        }
+        if edit.onRollFilmChanged == nil {
+            edit.onRollFilmChanged = { [model, edit, library] stock in
+                await model.filmStockCommittedElsewhere(stock)
+                // The film kind may have followed the stock.
+                edit.refresh()
+                library.scan()
+            }
+        }
     }
 
     private func installCaptureHandlers() {

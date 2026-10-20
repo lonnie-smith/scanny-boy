@@ -46,7 +46,9 @@ struct ConfigurationModelTests {
         rollInfoLines: [String]? = nil,
         setBaseFrameLines: [String] = [],
         setFilmKindLines: [String] = [],
-        setFlatFieldReferenceLines: [String] = []
+        setFlatFieldReferenceLines: [String] = [],
+        metadataValuesLines: [String]? = nil,
+        metadataSetLines: [String]? = nil
     ) throws -> URL {
         func echoLines(_ lines: [String]) -> String {
             lines.map { "echo '\($0)'" }.joined(separator: "\n")
@@ -69,6 +71,11 @@ struct ConfigurationModelTests {
         ]
         let defaultSetFilmKindSuccess = [
             TestEvents.line(#"{"event":"started","command":"roll set-film-kind"}"#),
+            finishedSuccess,
+        ]
+        let metadataLog = directory.appending(path: ".metadata-set-log").path
+        let defaultMetadataSet = [
+            TestEvents.line(#"{"event":"started","command":"metadata set"}"#),
             finishedSuccess,
         ]
         let script = """
@@ -118,6 +125,15 @@ struct ConfigurationModelTests {
             \(echoLines(setFilmKindLines.isEmpty ? defaultSetFilmKindSuccess : setFilmKindLines))
                 exit 0
             fi
+            if [ "$1" = "metadata" ] && [ "$2" = "set" ]; then
+            echo "$*" >> '\(metadataLog)'
+            \(echoLines(metadataSetLines ?? defaultMetadataSet))
+                exit 0
+            fi
+            if [ "$1" = "metadata" ] && [ "$2" = "values" ]; then
+            \(echoLines(metadataValuesLines ?? [filmCatalogEvent(), finishedSuccess]))
+                exit 0
+            fi
             if [ "$1" = "roll" ] && [ "$2" = "set-flatfield-reference" ]; then
             touch "$FF_MARKER"
             \(echoLines(setFlatFieldReferenceLines.isEmpty ? defaultSetFlatFieldReferenceSuccess : setFlatFieldReferenceLines))
@@ -154,15 +170,26 @@ struct ConfigurationModelTests {
         filmBaseJSON: String,
         flatFieldJSON: String? = nil,
         filmKind: String? = "colour",
-        setupJSON: String? = nil
+        setupJSON: String? = nil,
+        film: String? = nil,
+        runsJSON: String = "[]"
     ) -> String {
+        let metadataJSON = film.map { "{\"film\":\"\($0)\"}" } ?? "{}"
         let filmKindJSON = filmKind.map { "\"\($0)\"" } ?? "null"
         let flatField = flatFieldJSON ?? attachedFlatFieldJSON()
         let setupField = setupJSON.map { ",\"setup\":\($0)" } ?? ""
         let manifest = """
-        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":[],"negatives":[],"metadata":{},"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON),"flat_field":\(flatField)\(setupField)}
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","runs":\(runsJSON),"negatives":[],"metadata":\(metadataJSON),"film_kind":\(filmKindJSON),"film_base":\(filmBaseJSON),"flat_field":\(flatField)\(setupField)}
         """
         return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
+    }
+
+    /// The `metadata values --field film` answer: the pre-seeded stocks that
+    /// matter to these tests, plus a user-typed one with no kind.
+    private static func filmCatalogEvent() -> String {
+        TestEvents.line(
+            #"{"event":"metadata_values","field":"film","values":["Home Brew","Kodak Portra 400","Ilford HP5+"],"film_kinds":{"Kodak Portra 400":"colour","Ilford HP5+":"monochrome"}}"#
+        )
     }
 
     private static let defaultSetBaseFrameSuccess = [
@@ -247,7 +274,7 @@ struct ConfigurationModelTests {
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
             fi
-            echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -281,8 +308,8 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":27,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
-            echo '{"protocol_version":27,"event":"finished","status":"failed","exit_status":1}'
+            echo '{"protocol_version":28,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":28,"event":"finished","status":"failed","exit_status":1}'
             """,
             in: directory
         )
@@ -306,7 +333,7 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -328,8 +355,8 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":27,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
-            echo '{"protocol_version":27,"event":"finished","status":"failed","exit_status":1}'
+            echo '{"protocol_version":28,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":28,"event":"finished","status":"failed","exit_status":1}'
             """,
             in: directory
         )
@@ -361,10 +388,10 @@ struct ConfigurationModelTests {
             fi
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
-              echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
               exit 0
             fi
-            echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -406,10 +433,10 @@ struct ConfigurationModelTests {
             fi
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
-              echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
               exit 0
             fi
-            echo '{"protocol_version":27,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":28,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -1216,5 +1243,237 @@ struct ConfigurationModelTests {
         model.down = 2
         #expect(model.across == 6)
         #expect(model.perNegative == 12)
+    }
+
+    // MARK: - Film stock
+
+    /// A model on a roll served by the fake helper, with `roll info` already
+    /// read. `locked` gives the roll a run, which locks the film kind.
+    private func makeFilmStockModel(
+        in directory: URL,
+        film: String? = nil,
+        filmKind: String? = "colour",
+        locked: Bool = false,
+        metadataSetLines: [String]? = nil
+    ) async throws -> ConfigurationModel {
+        let rollDir = directory.appending(path: "roll", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: rollDir, withIntermediateDirectories: true)
+        let runs = locked ? #"[{"run_id":"run-1","status":"complete"}]"# : "[]"
+        let executable = try Self.fakeProbeExecutable(
+            in: directory,
+            catalogueOnly: [Self.started, Self.catalogueABC, Self.finishedSuccess],
+            rollInfoLines: [
+                TestEvents.line(#"{"event":"started","command":"roll info"}"#),
+                Self.rollInfoEvent(
+                    filmBaseJSON: "null", filmKind: filmKind, film: film, runsJSON: runs),
+                Self.finishedSuccess,
+            ],
+            metadataSetLines: metadataSetLines
+        )
+        let model = ConfigurationModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.rollURL = rollDir
+        await model.waitForPendingProbes()
+        return model
+    }
+
+    private static func kindWasSet(in directory: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appending(path: ".film-kind-set").path)
+    }
+
+    private static func metadataSetLog(in directory: URL) -> String {
+        (try? String(contentsOf: directory.appending(path: ".metadata-set-log"), encoding: .utf8))
+            ?? ""
+    }
+
+    @Test("the roll's film stock is read from roll info")
+    func filmStockIsReadFromRollInfo() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, film: "Kodak Gold 200")
+        #expect(model.filmStock == "Kodak Gold 200")
+
+        let other = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: other) }
+        let unset = try await makeFilmStockModel(in: other)
+        #expect(unset.filmStock == nil)
+    }
+
+    @Test("the film catalog carries stocks and kinds from metadata values")
+    func filmCatalogLoads() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory)
+        await model.reloadFilmCatalog()
+        #expect(model.filmCatalog.stocks == ["Home Brew", "Kodak Portra 400", "Ilford HP5+"])
+        #expect(model.filmCatalog.kind(forStock: "Ilford HP5+") == "monochrome")
+        #expect(model.filmCatalog.kind(forStock: "  ilford hp5+ ") == "monochrome")
+        #expect(model.filmCatalog.kind(forStock: "Home Brew") == nil)
+    }
+
+    @Test("committing a monochrome stock on an unlocked roll sets the film type")
+    func filmStockSetsKindWhenUnlockedAndKnown() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: "colour")
+        var changes = 0
+        model.onRollDetailsChanged = { changes += 1 }
+
+        await model.setFilmStock("Ilford HP5+")
+
+        #expect(model.filmStock == "Ilford HP5+")
+        #expect(model.filmStockError == nil)
+        #expect(Self.metadataSetLog(in: directory).contains(#""film":"Ilford HP5+""#))
+        #expect(Self.kindWasSet(in: directory))
+        // The fake's `roll info` answers monochrome once the kind is set.
+        #expect(model.filmKind == "monochrome")
+        #expect(changes == 1)
+    }
+
+    @Test("a stock on an unset film type fills the type in")
+    func filmStockFillsAnUnsetKind() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: nil)
+        #expect(model.filmKind == nil)
+
+        await model.setFilmStock("Ilford HP5+")
+
+        #expect(Self.kindWasSet(in: directory))
+        #expect(model.filmKind == "monochrome")
+    }
+
+    @Test("a stock whose kind the roll already has leaves the film type alone")
+    func filmStockWithSameKindDoesNotResetKind() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: "colour")
+
+        await model.setFilmStock("Kodak Portra 400")
+
+        #expect(model.filmStock == "Kodak Portra 400")
+        #expect(!Self.kindWasSet(in: directory))
+        #expect(model.filmKind == "colour")
+    }
+
+    @Test("a locked film type is never touched, even for a stock of another kind")
+    func filmStockLeavesLockedKindAlone() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: "colour", locked: true)
+        #expect(model.filmKindLocked)
+
+        await model.setFilmStock("Ilford HP5+")
+
+        #expect(model.filmStock == "Ilford HP5+")
+        #expect(!Self.kindWasSet(in: directory))
+        #expect(model.filmKind == "colour")
+        #expect(model.filmKindError == nil)
+    }
+
+    @Test("a stock the catalog has no kind for leaves the film type alone")
+    func filmStockWithUnknownKindLeavesKindAlone() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: "colour")
+
+        await model.setFilmStock("  Home Brew  ")
+
+        // Trimmed, written, and offered again from the refreshed catalog.
+        #expect(model.filmStock == "Home Brew")
+        #expect(Self.metadataSetLog(in: directory).contains(#""film":"Home Brew""#))
+        #expect(!Self.kindWasSet(in: directory))
+        #expect(model.filmKind == "colour")
+        #expect(model.filmCatalog.stocks.contains("Home Brew"))
+    }
+
+    @Test("clearing the film stock writes null and keeps the film type")
+    func clearingFilmStock() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, film: "Ilford HP5+")
+
+        await model.setFilmStock("   ")
+
+        #expect(model.filmStock == nil)
+        #expect(Self.metadataSetLog(in: directory).contains(#""film":null"#))
+        #expect(!Self.kindWasSet(in: directory))
+    }
+
+    @Test("a failed metadata set surfaces inline and changes nothing")
+    func filmStockFailureSurfacesInline() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(
+            in: directory,
+            film: "Kodak Gold 200",
+            metadataSetLines: [Self.errorEvent(code: "ROLL_NOT_FOUND"), Self.finishedFailed]
+        )
+        var changes = 0
+        model.onRollDetailsChanged = { changes += 1 }
+
+        await model.setFilmStock("Ilford HP5+")
+
+        #expect(model.filmStockError?.code == .rollNotFound)
+        #expect(model.filmStock == "Kodak Gold 200")
+        #expect(!Self.kindWasSet(in: directory))
+        #expect(changes == 0)
+    }
+
+    @Test("a stock committed on the Metadata stage follows the same film-type rule")
+    func filmStockCommittedElsewhereAppliesTheRule() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory, filmKind: "colour")
+
+        await model.filmStockCommittedElsewhere("Ilford HP5+")
+
+        #expect(model.filmStock == "Ilford HP5+")
+        #expect(Self.kindWasSet(in: directory))
+        #expect(model.filmKind == "monochrome")
+        // The caller wrote the metadata itself: nothing is written again.
+        #expect(Self.metadataSetLog(in: directory).isEmpty)
+
+        let other = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: other) }
+        let locked = try await makeFilmStockModel(in: other, filmKind: "colour", locked: true)
+        await locked.filmStockCommittedElsewhere("Ilford HP5+")
+        #expect(!Self.kindWasSet(in: other))
+        #expect(locked.filmKind == "colour")
+    }
+
+    @Test("filmKindToApply is a no-op unless unlocked, known, and different")
+    func filmKindRule() {
+        typealias Catalog = ConfigurationModel.FilmCatalog
+        let catalog = Catalog(
+            stocks: ["Kodak Portra 400", "Ilford HP5+"],
+            kinds: ["Kodak Portra 400": "colour", "Ilford HP5+": "monochrome"]
+        )
+        func rule(_ stock: String?, current: String?, locked: Bool) -> String? {
+            ConfigurationModel.filmKindToApply(
+                forStock: stock, catalog: catalog, currentKind: current, isLocked: locked)
+        }
+        #expect(rule("Ilford HP5+", current: "colour", locked: false) == "monochrome")
+        #expect(rule("Ilford HP5+", current: nil, locked: false) == "monochrome")
+        #expect(rule("Ilford HP5+", current: "monochrome", locked: false) == nil)
+        #expect(rule("Ilford HP5+", current: "colour", locked: true) == nil)
+        #expect(rule("Home Brew", current: "colour", locked: false) == nil)
+        #expect(rule(nil, current: "colour", locked: false) == nil)
+    }
+
+    @Test("changing the roll's format reports a roll-details change")
+    func formatChangeReportsRollDetailsChanged() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try await makeFilmStockModel(in: directory)
+        var changes = 0
+        model.onRollDetailsChanged = { changes += 1 }
+
+        await model.setRollFormat(.sixBySix)
+
+        #expect(model.rollFormat == .sixBySix)
+        #expect(changes == 1)
     }
 }

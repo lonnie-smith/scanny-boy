@@ -28,6 +28,20 @@ from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
 from scanny_boy.work_dir_support import make_roll_dir
 
+# The stocks migration 0020 seeds into the `film` catalog, in listed order.
+FILM_STOCK_SEEDS = [
+    ("Kodak Ultramax 400", "colour"),
+    ("Kodak Gold 200", "colour"),
+    ("Kodak Portra 160", "colour"),
+    ("Kodak Portra 400", "colour"),
+    ("Kodak Tri-X 400", "monochrome"),
+    ("Kodak TMax 400", "monochrome"),
+    ("Kodak TMax P3200", "monochrome"),
+    ("Ilford HP5+", "monochrome"),
+    ("Ilford FP4+", "monochrome"),
+    ("Ilford Delta 3200", "monochrome"),
+]
+
 _NEGATIVE_A = "stitch-negative-01"
 _NEGATIVE_B = "stitch-negative-02"
 
@@ -207,7 +221,9 @@ def test_roll_film_and_iso_persist_and_catalog(two_negative_roll: Path):
     )
     assert effective["film"] == "Tri-X 400"
     assert effective["iso"] == "400"
-    assert repo.list_metadata_values("film") == ["Tri-X 400"]
+    # The typed stock outranks the seeded ones and carries no kind.
+    assert repo.list_metadata_values("film")[0] == "Tri-X 400"
+    assert "Tri-X 400" not in repo.list_metadata_value_kinds("film")
     assert repo.list_metadata_values("iso") == ["400"]
 
 
@@ -223,8 +239,34 @@ def test_negative_payload_rejects_roll_only_fields(two_negative_roll: Path):
 
 def test_values_command_accepts_film(two_negative_roll: Path):
     run_metadata_set(two_negative_roll, {"roll": {"film": "HP5+"}})
-    values = run_metadata_values("film")
-    assert values == ["HP5+"]
+    values, film_kinds = run_metadata_values("film")
+    assert values[0] == "HP5+"
+    assert film_kinds is not None
+    assert "HP5+" not in film_kinds
+
+
+def test_values_command_film_carries_seeded_kinds(two_negative_roll: Path):
+    values, film_kinds = run_metadata_values("film")
+    assert values == [stock for stock, _ in FILM_STOCK_SEEDS]
+    assert film_kinds == dict(FILM_STOCK_SEEDS)
+    assert film_kinds["Kodak Portra 400"] == "colour"
+    assert film_kinds["Ilford HP5+"] == "monochrome"
+
+
+def test_values_command_film_kind_survives_reuse(two_negative_roll: Path):
+    run_metadata_set(two_negative_roll, {"roll": {"film": "Kodak Portra 400"}})
+    values, film_kinds = run_metadata_values("film")
+    assert values[0] == "Kodak Portra 400"
+    assert film_kinds is not None
+    assert film_kinds["Kodak Portra 400"] == "colour"
+    assert len(values) == len(FILM_STOCK_SEEDS)
+
+
+def test_values_command_other_fields_have_no_film_kinds(two_negative_roll: Path):
+    run_metadata_set(two_negative_roll, {"roll": {"city": "Porto"}})
+    values, film_kinds = run_metadata_values("city")
+    assert values == ["Porto"]
+    assert film_kinds is None
 
 
 def test_catalog_remembers_canonical_values_not_caption(two_negative_roll: Path):
@@ -401,6 +443,26 @@ def test_cli_values_emits_metadata_values_matching_schema(two_negative_roll: Pat
     for event in events:
         assert_matches_schema(event, schema)
     assert events[1]["values"] == ["Oregon"]
+    assert "film_kinds" not in events[1]
+
+
+def test_cli_values_film_emits_film_kinds_matching_schema(two_negative_roll: Path):
+    run_metadata_set(two_negative_roll, {"roll": {"film": "Homebrew 100"}})
+    import contextlib
+    import io
+
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        exit_status = main(["metadata", "values", "--field", "film"])
+    assert exit_status == 0
+    events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    schema = load_schema()
+    for event in events:
+        assert_matches_schema(event, schema)
+    values_event = events[1]
+    assert values_event["event"] == "metadata_values"
+    assert values_event["values"][0] == "Homebrew 100"
+    assert values_event["film_kinds"] == dict(FILM_STOCK_SEEDS)
 
 
 def test_cli_set_bad_payload_fails_with_invalid_metadata(two_negative_roll: Path):

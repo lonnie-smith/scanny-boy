@@ -25,6 +25,11 @@ struct Roll: Identifiable, Sendable, Hashable {
     /// The roll's number of negatives — every negative, replacement is
     /// in-place so there is nothing to exclude.
     let negativeCount: Int?
+    /// The roll's film stock (the roll-level `film` metadata), when set.
+    let film: String?
+    /// The roll's setup format, as `FilmFormat`'s raw value (`35mm`,
+    /// `6x6`, ...), when set.
+    let format: String?
 
     /// `rollID` when the roll loaded; the path otherwise, since an
     /// unreadable roll has no `roll_id` to key on but is still one row.
@@ -34,13 +39,26 @@ struct Roll: Identifiable, Sendable, Hashable {
     /// name, so an unreadable roll is still identifiable.
     var displayName: String { rollName ?? path.lastPathComponent }
 
+    /// The sidebar's secondary line: the film stock and the negative format,
+    /// whichever are set, joined with a middle dot ("Kodak Portra 400 · 6×6").
+    /// `nil` when neither is, so the row shows no empty line.
+    var filmSummary: String? {
+        let parts = [
+            film.flatMap { $0.isEmpty ? nil : $0 },
+            format.flatMap { FilmFormat(rawValue: $0)?.label },
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     init(
         path: URL,
         status: Status,
         reason: Reason?,
         rollID: String?,
         rollName: String?,
-        negativeCount: Int?
+        negativeCount: Int?,
+        film: String? = nil,
+        format: String? = nil
     ) {
         self.path = path
         self.status = status
@@ -48,6 +66,8 @@ struct Roll: Identifiable, Sendable, Hashable {
         self.rollID = rollID
         self.rollName = rollName
         self.negativeCount = negativeCount
+        self.film = film
+        self.format = format
     }
 
     /// Decodes one entry of `roll_list`'s `rolls` array
@@ -76,7 +96,9 @@ struct Roll: Identifiable, Sendable, Hashable {
             reason: reason,
             rollID: fields["roll_id"]?.stringValue,
             rollName: fields["roll_name"]?.stringValue,
-            negativeCount: fields["negative_count"]?.intValue
+            negativeCount: fields["negative_count"]?.intValue,
+            film: fields["film"]?.stringValue,
+            format: fields["format"]?.stringValue
         )
     }
 }

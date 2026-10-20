@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 27
+PROTOCOL_VERSION = 28
 
 
 class EventType(enum.StrEnum):
@@ -466,6 +466,10 @@ class RollListingEntry:
     roll_id: str | None = None
     roll_name: str | None = None
     negative_count: int | None = None
+    # The roll's film-stock string and setup format; null when unset (and
+    # for an unreadable roll).
+    film: str | None = None
+    format: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -520,6 +524,16 @@ class MetadataValues(Event):
 
     field: str
     values: list[str]
+    # Only for field `film`: stock name -> `colour`|`monochrome` for every
+    # returned value that has a kind (possibly empty). Omitted for every
+    # other field.
+    film_kinds: dict[str, str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if self.film_kinds is None:
+            del data["film_kinds"]
+        return data
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

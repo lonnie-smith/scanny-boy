@@ -181,7 +181,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":27,"event":"negative_deleted",\
+                {"protocol_version":28,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -411,7 +411,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":27,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":28,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -650,7 +650,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":27,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":28,"command":"probe"}"#)
         }
     }
 
@@ -781,5 +781,36 @@ struct CLIEventTests {
         )
         #expect(stale.code == .spotsStale)
         #expect(stale.code?.name == "SPOTS_STALE")
+    }
+
+    // MARK: - metadata_values film_kinds (protocol 28)
+
+    @Test("metadata_values for film carries the stock-to-kind map")
+    func metadataValuesDecodesFilmKinds() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"metadata_values","field":"film","values":["Kodak Portra 400","My Stock","Ilford HP5+"],"film_kinds":{"Kodak Portra 400":"colour","Ilford HP5+":"monochrome"}}"#
+            )
+        )
+        #expect(event.kind == .metadataValues)
+        #expect(event.metadataField == "film")
+        #expect(event.metadataFieldValues == ["Kodak Portra 400", "My Stock", "Ilford HP5+"])
+        #expect(
+            event.metadataFilmKinds == [
+                "Kodak Portra 400": "colour", "Ilford HP5+": "monochrome",
+            ])
+        // The user-typed stock has no entry.
+        #expect(event.metadataFilmKinds?["My Stock"] == nil)
+    }
+
+    @Test("metadata_values for another field has no film_kinds")
+    func metadataValuesWithoutFilmKinds() throws {
+        let event = try CLIEvent(
+            line: TestEvents.line(
+                #"{"event":"metadata_values","field":"city","values":["Paris"]}"#
+            )
+        )
+        #expect(event.metadataFieldValues == ["Paris"])
+        #expect(event.metadataFilmKinds == nil)
     }
 }
