@@ -39,7 +39,10 @@ struct NewRollSheet: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
+                // Not while creating: the roll would land after the sheet
+                // is gone, with nothing left to open its intake sheet.
                 Button("Cancel") { dismiss() }
+                    .disabled(isCreating)
                 Button("Add Scans") { create(then: .addScans) }
                     .disabled(isReady == false)
                     .accessibilityIdentifier("createRollAddScansButton")
@@ -51,6 +54,7 @@ struct NewRollSheet: View {
         }
         .padding(20)
         .frame(minWidth: 360)
+        .interactiveDismissDisabled(isCreating)
         .onAppear {
             name = Self.defaultName()
         }

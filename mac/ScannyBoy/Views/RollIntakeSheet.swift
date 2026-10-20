@@ -69,6 +69,9 @@ struct RollIntakeSheet: View {
             minWidth: 760, idealWidth: 960, maxWidth: .infinity,
             minHeight: 560, idealHeight: 760, maxHeight: .infinity
         )
+        // Esc would otherwise close the sheet past `canClose`. Capture never
+        // closes on Esc at all: there Esc stops a sequence (§3.2).
+        .interactiveDismissDisabled(intake.kind == .capture || !canClose)
         .onReceive(
             NotificationCenter.default.publisher(for: .scannyBoyRequestFlatFieldProfiles)
         ) { _ in
@@ -165,11 +168,14 @@ struct RollIntakeSheet: View {
 
     /// Closing mid-sequence would leave the camera firing with nothing on
     /// screen to pause it, and closing mid-conversion would hide its
-    /// progress; both stay open until the work reaches a resting point.
+    /// progress; both stay open until the work reaches a resting point. A
+    /// paused or stopped negative is a resting point: File > Tethered
+    /// Capture… reopens it, since the sidebar stays on its roll meanwhile.
     private var canClose: Bool {
         switch intake.kind {
         case .capture:
             !capture.focusAssist.isOpen
+                && !isShotInFlight
                 && capture.sequencePhase != .running
                 && capture.sequencePhase != .waitingForDownload
         case .addScans:
@@ -177,13 +183,19 @@ struct RollIntakeSheet: View {
         }
     }
 
+    private var isShotInFlight: Bool {
+        capture.isShootingBaseFrame
+            || capture.isShootingFlatFieldReference
+            || capture.focusAssist.isCheckShotBusy
+    }
+
     private var closeHelp: String {
         guard !canClose else { return "Close and return to the roll" }
         switch intake.kind {
         case .capture:
-            return capture.focusAssist.isOpen
-                ? "Close focus assist first"
-                : "Pause the sequence first"
+            if capture.focusAssist.isOpen { return "Close focus assist first" }
+            if isShotInFlight { return "Wait for the shot to finish" }
+            return "Pause the sequence first"
         case .addScans:
             return "Wait for the current operation to finish"
         }

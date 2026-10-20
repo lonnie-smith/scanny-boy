@@ -266,6 +266,9 @@ struct ContentView: View {
     private func openIntake(_ kind: RollIntakeKind) {
         guard presentedIntake == nil,
             !isPresentingNewRollSheet,
+            !isPresentingRestitch,
+            !isPresentingFlatFieldProfiles,
+            !isPresentingGridProfiles,
             !activity.isBusy,
             let roll = selectedRoll,
             roll.status == .ok,
@@ -428,7 +431,7 @@ struct ContentView: View {
         let rollURL = library.rolls.first { $0.id == selection }?.path
         model.rollURL = rollURL
         edit.rollURL = rollURL
-        keyboard.hasSelectedRoll = rollURL != nil
+        keyboard.hasSelectedRoll = selectedRoll?.status == .ok
         wireCaptureToRoll()
         if selection != nil, rollURL == nil, !library.isScanning {
             selection = nil
