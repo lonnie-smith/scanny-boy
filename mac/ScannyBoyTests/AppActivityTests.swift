@@ -193,6 +193,27 @@ struct AppActivityTests {
         #expect(activity.isSidebarSelectionLocked == false)
     }
 
+    @Test("sidebar stays selectable while the camera is connected and idle")
+    func sidebarUnlockedWhileCameraConnectedAndIdle() async throws {
+        let runner = CLIRunner(executable: URL(fileURLWithPath: "/usr/bin/false"))
+        let capture = CaptureSessionModel(
+            runner: runner, camera: FakeTetherCamera(), defaults: Self.isolatedDefaults()
+        )
+        let activity = AppActivity(
+            run: RunModel(runner: runner),
+            edit: EditModel(runner: runner),
+            export: ExportModel(runner: runner),
+            rig: RigModel(runner: runner),
+            configuration: ConfigurationModel(runner: runner, defaults: Self.isolatedDefaults()),
+            capture: capture,
+            stitchQueue: StitchQueueModel(runner: runner)
+        )
+        await capture.connect()
+        await capture.waitForLeftoverClaim()
+        #expect(capture.isSessionOpen == true)
+        #expect(activity.isSidebarSelectionLocked == false)
+    }
+
     @Test("isBusy while validating selection")
     func isBusyWhileValidatingSelection() async throws {
         let directory = try Self.makeTemporaryDirectory()

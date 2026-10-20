@@ -74,6 +74,18 @@
         },
         "grid_cells": { "type": "integer", "minimum": 1 },
         "measure_version": { "type": "integer", "minimum": 1 },
+        "region": {
+          "description": "Optional (protocol 27): the rectangle `--region` confined the measurement to, as [x0, y0, x1, y1] fractions of the frame, or null for the whole frame. When set, `area_fraction` and `grid_cells` are of the region. Absent on a block attached before protocol 27.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "type": "number", "minimum": 0, "maximum": 1 },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            { "type": "null" }
+          ]
+        },
         "exposure": {
           "type": "object",
           "description": "docs/ROLL_HIGHLIGHT_LOCK.md section 3: the base frame's own EXIF shutter/aperture/ISO, compared against each scan's. Any field null when EXIF was unreadable.",
@@ -890,7 +902,7 @@
       "oneOf": [{ "$ref": "#/definitions/filmDecision" }, { "type": "null" }]
     },
     "film_base": {
-      "description": "Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a roll with FILM_BASE_REQUIRED.",
+      "description": "Optional because a roll predating the feature (or one with no base frame attached yet) has none; run/stitch refuse such a colour roll with FILM_BASE_REQUIRED. A monochrome roll needs none (protocol 27).",
       "oneOf": [{ "$ref": "#/definitions/filmBase" }, { "type": "null" }]
     },
     "highlight_lock": {

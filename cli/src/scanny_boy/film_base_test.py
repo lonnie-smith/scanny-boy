@@ -208,6 +208,89 @@ def test_frame_with_no_flat_thin_region_is_not_found():
     assert exc_info.value.code is Code.FILM_BASE_NOT_FOUND
 
 
+# --- measuring inside a region ---------------------------------------------
+
+
+def test_rebate_strip_fails_the_whole_frame_but_passes_inside_a_region():
+    """An ordinary negative: a strip of clear rebate along one edge, too
+    small a share of the whole frame, measured instead inside a region
+    drawn over it. The gates are the same; only "the frame" shrinks."""
+    band = int(_SIZE * 0.10)
+    linear = _painted(base_rects=[(0, band, 0, _SIZE)])
+    with pytest.raises(film_base.FilmBaseError) as exc_info:
+        film_base.gate(film_base.measure(linear))
+    assert exc_info.value.code is Code.FILM_BASE_TOO_SMALL
+    assert "select an area" in exc_info.value.message
+
+    # The region overshoots the strip into the picture a little, as a
+    # hand-drawn one will.
+    region = film_base.Region(0.1, 0.0, 0.6, 0.13)
+    measurement = film_base.measure(linear, region)
+    film_base.gate(measurement)
+    for measured, expected in zip(measurement.density, _BASE_DENSITY, strict=True):
+        assert measured == pytest.approx(expected, abs=1e-5)
+    assert measurement.region == region
+    rows, cols = (
+        int(np.ceil(0.13 * _SIZE)),
+        int(np.ceil(0.6 * _SIZE)) - int(0.1 * _SIZE),
+    )
+    assert measurement.grid_cells == rows * cols
+    chosen = measurement.populations[measurement.chosen_index]
+    assert chosen.area_fraction == pytest.approx(band / rows, abs=0.01)
+
+
+def test_a_region_straddling_bare_light_is_ambiguous_with_a_region_remedy():
+    linear = _painted(
+        base_rects=[(0, 100, 0, _SIZE)],
+        bare_rects=[(100, 180, 0, _SIZE)],
+    )
+    measurement = film_base.measure(linear, film_base.Region(0.0, 0.0, 1.0, 0.18))
+    with pytest.raises(film_base.FilmBaseError) as exc_info:
+        film_base.gate(measurement)
+    assert exc_info.value.code is Code.FILM_BASE_AMBIGUOUS
+    assert "selected area" in exc_info.value.message
+
+
+def test_a_region_too_small_to_measure_is_too_small():
+    measurement = film_base.measure(
+        _linear_from_density(_BASE_DENSITY), film_base.Region(0.5, 0.5, 0.52, 0.52)
+    )
+    assert measurement.populations[measurement.chosen_index].area_fraction == 1.0
+    with pytest.raises(film_base.FilmBaseError) as exc_info:
+        film_base.gate(measurement)
+    assert exc_info.value.code is Code.FILM_BASE_TOO_SMALL
+    assert "draw a larger area" in exc_info.value.message
+
+
+def test_region_slice_rounds_outward_to_whole_cells():
+    grid = np.zeros((10, 20, 3), dtype=np.float32)
+    assert film_base.Region(0.0, 0.0, 1.0, 1.0).slice_grid(grid).shape == (10, 20, 3)
+    assert film_base.Region(0.12, 0.15, 0.13, 0.16).slice_grid(grid).shape == (1, 1, 3)
+    assert film_base.Region(0.99, 0.99, 1.0, 1.0).slice_grid(grid).shape == (1, 1, 3)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "0,0,1",
+        "0,0,1,1,1",
+        "a,0,1,1",
+        "0.5,0,0.5,1",
+        "0,0.6,1,0.4",
+        "-0.1,0,1,1",
+        "0,0,1,1.5",
+    ],
+)
+def test_region_parse_rejects_malformed_text(text):
+    with pytest.raises(ValueError):
+        film_base.Region.parse(text)
+
+
+def test_region_parse_round_trips():
+    region = film_base.Region.parse("0.1,0.2,0.3,0.4")
+    assert region.as_list() == [0.1, 0.2, 0.3, 0.4]
+
+
 def test_build_params_records_every_constant():
     params = film_base.build_params()
     assert params == {

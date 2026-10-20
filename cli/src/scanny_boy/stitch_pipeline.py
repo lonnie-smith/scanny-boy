@@ -1313,10 +1313,10 @@ def _compose_kwargs(
     }
 
 
-def _require_roll_ready(roll: RollManifest) -> None:
+def _require_roll_ready(roll: RollManifest, film_kind: FilmKind) -> None:
     """The roll-level gates both a stitch and a compose need before any
-    pixel work: a manifest new enough for film-base anchoring, and a
-    film-base reference to anchor to."""
+    pixel work: a manifest new enough for film-base anchoring, and — on a
+    colour roll — a film-base reference to anchor to."""
     # REBATE_ANCHORING §9: check the version once, before anything else. A
     # roll whose manifest predates film-base anchoring stays readable,
     # editable and exportable, but cannot take new negatives —
@@ -1331,8 +1331,11 @@ def _require_roll_ready(roll: RollManifest) -> None:
 
     # §3.2 rule 4: a roll with no film-base reference refuses before any
     # pixel work — the user must not wait through ten minutes of stitching
-    # to be told the roll has no base frame.
-    if roll.film_base is None:
+    # to be told the roll has no base frame. A monochrome roll needs none:
+    # every consumer of the density (the thin-end colour anchor, the
+    # highlight lock, the base check) is a 3-channel measurement that a
+    # mono roll's one collapsed channel never reads.
+    if roll.film_base is None and film_kind is not FilmKind.MONOCHROME:
         raise StitchError(
             Code.FILM_BASE_REQUIRED,
             "this roll has no film-base reference; add one with the "
@@ -1651,7 +1654,7 @@ def run_compose(
     except (BadManifestError, repo.RollNotRegisteredError) as exc:
         raise StitchError(exc.code, exc.message) from exc
     film_kind = _film_kind_from_manifest(roll)
-    _require_roll_ready(roll)
+    _require_roll_ready(roll, film_kind)
     profile = _load_rig_profile(rig_profile_id, work_dir, groups)
     base_refs = _locked_base_refs(roll)
 
@@ -2081,7 +2084,7 @@ def run_stitch(
             check_roll_invariants(roll_peek, invariants)
         except RollInvariantMismatchError as exc:
             raise StitchError(exc.code, exc.message) from exc
-        _require_roll_ready(roll_peek)
+        _require_roll_ready(roll_peek, film_kind)
         workers = _worker_count(work_manifest, jobs)
         progress, source_index_by_group = _new_progress(
             groups, emit=emit, run_id=run_id
@@ -2188,7 +2191,7 @@ def run_stitch(
         roll = plan.existing_manifest
         assert roll is not None
 
-        _require_roll_ready(roll)
+        _require_roll_ready(roll, film_kind)
 
         if negatives:
             wanted_members = {
@@ -2220,7 +2223,7 @@ def run_stitch(
         # fresh roll has none until this run seeds one, so the first run
         # compares here. A warning, not an error: the measurement may still be
         # fine (§7.2).
-        base_camera_model = roll.film_base.get("camera_model")
+        base_camera_model = (roll.film_base or {}).get("camera_model")
         roll_camera_model = (
             roll.camera_color.camera_model if roll.camera_color is not None else None
         )
@@ -3144,11 +3147,16 @@ def _lock_references(
     wrong reference. Only `locked_at` is written, never the whole block."""
     source_sha256, density, gain_map_sha256 = expected
     base = fresh.film_base
-    if (
-        base is None
-        or base.get("source_sha256") != source_sha256
-        or (None if base.get("density") is None else list(base["density"])) != density
-    ):
+    # A monochrome roll may have no film base at all; it then expects none.
+    base_identity = (
+        (None, None)
+        if base is None
+        else (
+            base.get("source_sha256"),
+            None if base.get("density") is None else list(base["density"]),
+        )
+    )
+    if base_identity != (source_sha256, density):
         raise StitchError(
             Code.FILM_BASE_CHANGED,
             "the roll's film-base reference changed while this negative was "
@@ -3163,7 +3171,7 @@ def _lock_references(
             "being stitched, so its pixels no longer match the roll; "
             "stitch it again",
         )
-    if base.get("locked_at") is None:
+    if base is not None and base.get("locked_at") is None:
         base["locked_at"] = stamp
     if flat is not None and flat.get("locked_at") is None:
         flat["locked_at"] = stamp

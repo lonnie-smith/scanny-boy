@@ -29,6 +29,14 @@ enum CaptureCellState: Sendable, Equatable {
     var isFilled: Bool {
         if case .filled = self { true } else { false }
     }
+
+    /// A shot has been released for this cell and its file is not yet on disk.
+    var isInFlight: Bool {
+        switch self {
+        case .exposing, .downloading: true
+        default: false
+        }
+    }
 }
 
 enum CaptureSequencePhase: Sendable, Equatable {
@@ -77,7 +85,21 @@ final class CaptureSessionModel {
     private var connectionHandlerInstalled = false
     private var sequenceTask: Task<Void, Never>?
 
-    var rollURL: URL?
+    var rollURL: URL? {
+        didSet {
+            // `nil` is transient (a selection waiting on a library rescan),
+            // so only a move from one roll to another counts as a switch.
+            guard let rollURL else { return }
+            let previous = lastRollURL
+            lastRollURL = rollURL
+            if let previous, previous.standardizedFileURL != rollURL.standardizedFileURL {
+                resetForRollSwitch()
+            }
+        }
+    }
+    /// The last non-nil `rollURL`, so a roll switch is told apart from the
+    /// same roll coming back after a transient `nil`.
+    private var lastRollURL: URL?
     var filmKind: String?
     var filmBase: FilmBase?
     var rigProfileID: String?
@@ -129,6 +151,10 @@ final class CaptureSessionModel {
     private(set) var isSessionOpen = false
     private(set) var isShootingBaseFrame = false
     private(set) var baseFrameError: ConfigurationModel.Issue?
+    /// The last base frame shot on this roll, whether or not it passed, so
+    /// the operator can select its area of clear rebate instead
+    /// (`measureBaseFrame(region:)`).
+    private(set) var lastBaseFrameURL: URL?
     private(set) var isShootingFlatFieldReference = false
     private(set) var flatFieldReferenceError: ConfigurationModel.Issue?
     private(set) var referenceAperture: UInt32?
@@ -197,12 +223,25 @@ final class CaptureSessionModel {
             && rollURL != nil
             && flatField != nil
             && filmKind != nil
-            && filmBase != nil
+            && (filmBase != nil || !requiresBaseFrame)
             && sequencePhase == .idle
             && !hasUnresolvedLeftovers
             && !isShootingBaseFrame
             && !isShootingFlatFieldReference
             && !focusAssist.isCheckShotBusy
+    }
+
+    /// Whether capture is holding its roll: a negative is open (running,
+    /// paused, stopped, or left open by a drop), a one-shot or check shot is
+    /// in flight, or a leftover awaits the operator's choice. A camera that
+    /// is merely connected between negatives holds nothing, so the sidebar
+    /// can move to another roll without disconnecting.
+    var holdsRoll: Bool {
+        sequencePhase != .idle
+            || isShootingBaseFrame
+            || isShootingFlatFieldReference
+            || focusAssist.isCheckShotBusy
+            || hasUnresolvedLeftovers
     }
 
     /// The camera is reachable for a resume: `.busy` counts, because a shot
@@ -256,10 +295,15 @@ final class CaptureSessionModel {
         if filmKind == nil {
             return "Choose a film type in Setup before capturing."
         }
-        if filmBase == nil {
+        if filmBase == nil, requiresBaseFrame {
             return "Capture a base frame before capturing."
         }
         return nil
+    }
+
+    /// See `ConfigurationModel.requiresBaseFrame`: silver B&W needs none.
+    var requiresBaseFrame: Bool {
+        filmKind != FilmKindChoice.monochrome.rawValue
     }
 
     /// Whether the play/pause button and Space should be active.
@@ -432,17 +476,34 @@ final class CaptureSessionModel {
                 in: captureFolder, firstRelease: clock.now(), shotNumber: 1
             )
             try await captureOneFrame(to: url)
-            let result = await Self.runSetBaseFrame(
-                runner: runner, roll: rollURL, frame: url
-            )
-            if let error = result.error {
-                baseFrameError = error
-            } else if let filmBase = result.filmBase {
-                self.filmBase = filmBase
-                onFilmBaseAttached?(filmBase)
-            }
+            lastBaseFrameURL = url
+            await attachBaseFrame(url, roll: rollURL, region: nil)
         } catch {
             baseFrameError = ConfigurationModel.Issue(code: .internalError, message: error.localizedDescription)
+        }
+    }
+
+    /// Re-measures the last base frame shot inside `region` — the area of
+    /// clear rebate the operator selected — without another release.
+    func measureBaseFrame(region: BaseFrameRegion) async {
+        guard filmBase?.lockedAt == nil, let rollURL, let url = lastBaseFrameURL,
+              sequencePhase == .idle, !isShootingBaseFrame
+        else { return }
+        isShootingBaseFrame = true
+        baseFrameError = nil
+        defer { isShootingBaseFrame = false }
+        await attachBaseFrame(url, roll: rollURL, region: region)
+    }
+
+    private func attachBaseFrame(_ url: URL, roll: URL, region: BaseFrameRegion?) async {
+        let result = await Self.runSetBaseFrame(
+            runner: runner, roll: roll, frame: url, region: region
+        )
+        if let error = result.error {
+            baseFrameError = error
+        } else if let filmBase = result.filmBase {
+            self.filmBase = filmBase
+            onFilmBaseAttached?(filmBase)
         }
     }
 
@@ -672,6 +733,17 @@ final class CaptureSessionModel {
     }
 
     private func pauseAfterCurrentShot() {
+        // Under auto-advance the app, not the operator, opened this
+        // negative. A pause before its shot fires — typically during the
+        // countdown at the end of a roll — leaves nothing to resume, so it
+        // closes to idle rather than parking an empty negative that holds
+        // the roll (§3.2: a pause stops the run instead of rolling on).
+        if autoAdvanceActive,
+            !cellStates.contains(where: { $0.isFilled || $0.isInFlight })
+        {
+            stopNegative()
+            return
+        }
         pausedAfterCell = true
         sequencePhase = .paused
         focusAssist.updateSequencePhase(sequencePhase)
@@ -887,6 +959,23 @@ final class CaptureSessionModel {
         }
     }
 
+    /// Clears the per-roll session state when the selected roll changes
+    /// between negatives (`holdsRoll` false, so nothing is open). The last
+    /// roll's finished negatives are already in the stitch queue, which
+    /// tracks them by roll; kept here they would be offered to "Discard
+    /// unpublished captures" on the new roll.
+    private func resetForRollSwitch() {
+        guard sequencePhase == .idle else { return }
+        completedNegatives = []
+        baselineFrameURLs = []
+        currentNegativeIndex = 0
+        referenceAperture = nil
+        baseFrameError = nil
+        lastBaseFrameURL = nil
+        flatFieldReferenceError = nil
+        resetCells()
+    }
+
     private func resetCells() {
         guard let count = perNegative else {
             cellStates = []
@@ -1075,13 +1164,14 @@ final class CaptureSessionModel {
     private static func runSetBaseFrame(
         runner: CLIRunner,
         roll: URL,
-        frame: URL
+        frame: URL,
+        region: BaseFrameRegion?
     ) async -> SetBaseFrameResult {
         var result = SetBaseFrameResult()
         var succeeded = false
         do {
             let session = runner.session(
-                for: .rollSetBaseFrame(roll: roll, frame: frame)
+                for: .rollSetBaseFrame(roll: roll, frame: frame, region: region)
             )
             for await output in try await session.start() {
                 switch output {

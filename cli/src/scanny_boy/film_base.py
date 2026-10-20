@@ -151,6 +151,61 @@ class BaseMeasurement:
     clipped_fractions: tuple[float, float, float]
     grid_cells: int
     measure_version: int = FILM_BASE_MEASURE_VERSION
+    # The `Region` the measurement was confined to, or None for the whole
+    # frame. Every area figure above (`area_fraction`, `grid_cells`) is then
+    # of the region, not of the frame.
+    region: Region | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class Region:
+    """A user-chosen rectangle of the base frame, in fractions of its width
+    and height: `x0 < x1`, `y0 < y1`, all in [0, 1].
+
+    The alternative to a whole frame of rebate: on an ordinary negative the
+    clear film base is often only a strip along an edge, which can never
+    reach `FILM_BASE_MIN_AREA_FRACTION` of the whole frame. Measured inside
+    a region drawn over that strip, every gate below applies to the region
+    instead — the strip must dominate *it*, be flat, unclipped and at least
+    `FILM_BASE_MIN_CELLS` cells — so the detector and its thresholds are
+    unchanged; only what counts as "the frame" is."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def __post_init__(self) -> None:
+        for value in (self.x0, self.y0, self.x1, self.y1):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("region coordinates must lie in [0, 1]")
+        if not (self.x0 < self.x1 and self.y0 < self.y1):
+            raise ValueError("a region needs x0 < x1 and y0 < y1")
+
+    @classmethod
+    def parse(cls, text: str) -> Region:
+        """`X0,Y0,X1,Y1`, as the CLI's `--region` takes it."""
+        parts = text.split(",")
+        if len(parts) != 4:
+            raise ValueError("a region is four comma-separated numbers: X0,Y0,X1,Y1")
+        try:
+            x0, y0, x1, y1 = (float(part) for part in parts)
+        except ValueError as exc:
+            raise ValueError("a region's coordinates must be numbers") from exc
+        return cls(x0, y0, x1, y1)
+
+    def as_list(self) -> list[float]:
+        return [self.x0, self.y0, self.x1, self.y1]
+
+    def slice_grid(self, grid: np.ndarray) -> np.ndarray:
+        """The grid cells the region covers, rounded outward to whole
+        cells so a thin strip is never rounded away."""
+        rows, cols = grid.shape[0], grid.shape[1]
+        r0 = min(int(np.floor(self.y0 * rows)), rows - 1)
+        c0 = min(int(np.floor(self.x0 * cols)), cols - 1)
+        r1 = max(int(np.ceil(self.y1 * rows)), r0 + 1)
+        c1 = max(int(np.ceil(self.x1 * cols)), c0 + 1)
+        return grid[r0:r1, c0:c1]
 
 
 class FilmBaseError(Exception):
@@ -191,9 +246,9 @@ def _percentile(values: np.ndarray, q: float) -> float:
     return float(np.percentile(values, q))
 
 
-def measure(linear: np.ndarray) -> BaseMeasurement:
+def measure(linear: np.ndarray, region: Region | None = None) -> BaseMeasurement:
     """Find the film-base population in one decoded, flat-fielded base
-    frame.
+    frame — or, with `region`, in that rectangle of it.
 
     `linear` is float32 linear light in [0, 1] — what
     linear.decode_to_linear returns — with the run's flat-field gain
@@ -204,8 +259,15 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
 
     Measures and chooses; does not gate. `gate()` gates, so a caller can
     record a failing frame's populations before raising.
+
+    The region is cut from the block-median grid of the whole frame, not
+    from the pixels, so a cell stays the same piece of film however small
+    the region is (a small crop would otherwise fall under
+    `normalization.ANALYSIS_PASSTHROUGH_PX` and be measured per pixel).
     """
     grid = normalization.block_median_grid(normalization.to_log_density(linear))
+    if region is not None:
+        grid = region.slice_grid(grid)
     lum = normalization.luma_of_log(grid)
     total_cells = int(lum.size)
 
@@ -250,6 +312,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
             populations=(),
             clipped_fractions=(0.0, 0.0, 0.0),
             grid_cells=total_cells,
+            region=region,
         )
 
     # Merge by density, not by space: two components whose
@@ -320,6 +383,7 @@ def measure(linear: np.ndarray) -> BaseMeasurement:
         populations=populations,
         clipped_fractions=clipped_fractions,  # type: ignore[arg-type]
         grid_cells=total_cells,
+        region=region,
     )
 
 
@@ -327,27 +391,43 @@ def gate(measurement: BaseMeasurement) -> None:
     """Raise FilmBaseError unless `measurement` came from a usable base
     frame. Checked in the order below; the first failure is the one
     the user sees, so the order is chosen for diagnostic value."""
+    in_region = measurement.region is not None
+    where = "the selected area" if in_region else "the base frame"
+    remedy = (
+        "draw the area over clear film base only"
+        if in_region
+        else "reframe to include more clear film base, or select an area "
+        "of clear rebate"
+    )
     if not measurement.populations:
         raise FilmBaseError(
             Code.FILM_BASE_NOT_FOUND,
-            "no flat film-base region was found in the base frame; it must "
-            "show a large area of clear rebate",
+            f"no flat film-base region was found in {where}; "
+            + (
+                "draw the area over clear film base only"
+                if in_region
+                else "it must show a large area of clear rebate, or select "
+                "an area of clear rebate"
+            ),
         )
     chosen = measurement.populations[measurement.chosen_index]
     if chosen.area_fraction < FILM_BASE_MIN_AREA_FRACTION:
         raise FilmBaseError(
             Code.FILM_BASE_TOO_SMALL,
             f"the largest flat rebate region covers only "
-            f"{chosen.area_fraction * 100:.0f}% of the base frame (at least "
-            f"{FILM_BASE_MIN_AREA_FRACTION * 100:.0f}% is needed); reframe "
-            "to include more clear film base",
+            f"{chosen.area_fraction * 100:.0f}% of {where} (at least "
+            f"{FILM_BASE_MIN_AREA_FRACTION * 100:.0f}% is needed); {remedy}",
         )
     if chosen.cells < FILM_BASE_MIN_CELLS:
         raise FilmBaseError(
             Code.FILM_BASE_TOO_SMALL,
             f"the largest flat rebate region covers only {chosen.cells} "
             f"analysis cells (at least {FILM_BASE_MIN_CELLS} is needed); "
-            "reframe to include more clear film base",
+            + (
+                "draw a larger area over clear film base"
+                if in_region
+                else "reframe to include more clear film base"
+            ),
         )
     worst_clipped = max(
         range(len(measurement.clipped_fractions)),
@@ -377,17 +457,23 @@ def gate(measurement: BaseMeasurement) -> None:
         if population.area_fraction >= FILM_BASE_AMBIGUOUS_RATIO * chosen.area_fraction:
             raise FilmBaseError(
                 Code.FILM_BASE_AMBIGUOUS,
-                f"the base frame contains two large flat regions of "
+                f"{where} contains two large flat regions of "
                 f"different density ({chosen.area_fraction * 100:.0f}% and "
-                f"{population.area_fraction * 100:.0f}% of the frame); one "
-                "of them may be bare light or a second strip — reframe so "
-                "the film rebate clearly dominates",
+                f"{population.area_fraction * 100:.0f}% of it); one "
+                "of them may be bare light or a second strip — "
+                + (
+                    "draw the area over the film rebate alone"
+                    if in_region
+                    else "reframe so the film rebate clearly dominates"
+                ),
             )
 
 
-def load(reference: Path, gain_map: np.ndarray | None) -> BaseMeasurement:
+def load(
+    reference: Path, gain_map: np.ndarray | None, region: Region | None = None
+) -> BaseMeasurement:
     """Decode `reference` with the locked RAW_PARAMS, apply `gain_map` if
-    given, and measure. Does NOT gate — the caller gates, so it can record a
+    given, and measure (inside `region`, when given). Does NOT gate — the caller gates, so it can record a
     failing frame's populations before raising.
 
     Geometric correction (distortion, CA) is deliberately not applied: the
@@ -403,7 +489,7 @@ def load(reference: Path, gain_map: np.ndarray | None) -> BaseMeasurement:
         # the measurement's own result, which is the number that matters.
         flatfield.apply_in_place(decoded.pixels, full_res_gain)
     linear = linear_module.decode_to_linear(decoded.pixels)
-    return measure(linear)
+    return measure(linear, region)
 
 
 def build_params() -> dict:

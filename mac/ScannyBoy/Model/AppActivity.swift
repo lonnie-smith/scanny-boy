@@ -65,13 +65,14 @@ final class AppActivity {
     }
 
     /// Whether the sidebar should refuse roll selection changes.
-    /// §4.2: only a live capture session pins the sidebar; a background stitch
-    /// queue disables roll-writing controls per roll, not roll switching.
+    /// §4.2: only capture work in progress pins the sidebar — an open
+    /// negative (including one left open by a dropped connection, §2.5,
+    /// which would otherwise resume into another roll's folder), a one-shot,
+    /// or an unresolved leftover. A camera that is merely connected between
+    /// negatives does not, and a background stitch queue disables
+    /// roll-writing controls per roll, not roll switching.
     var isSidebarSelectionLocked: Bool {
-        if capture.isSessionOpen { return true }
-        // A negative left open by a dropped connection (§2.5) still belongs
-        // to this roll: switching would resume it into another roll's folder.
-        if capture.sequencePhase != .idle { return true }
+        if capture.holdsRoll { return true }
         return isBusy
     }
 }

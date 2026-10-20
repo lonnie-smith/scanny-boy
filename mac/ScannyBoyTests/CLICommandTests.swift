@@ -830,6 +830,42 @@ struct CLICommandTests {
         )
     }
 
+    @Test("roll set-base-frame passes a selected region")
+    func rollSetBaseFrameRegionArguments() throws {
+        let roll = URL(filePath: "/Volumes/Scans/roll-12")
+        let frame = URL(filePath: "/Volumes/Scans/_DSC5012.NEF")
+        let region = try #require(
+            BaseFrameRegion(normalizedRect: CGRect(x: 0.1, y: -0.2, width: 0.5, height: 0.45))
+        )
+        #expect(
+            CLICommand.rollSetBaseFrame(roll: roll, frame: frame, region: region).arguments
+                == [
+                    "roll", "set-base-frame",
+                    "--roll", "/Volumes/Scans/roll-12",
+                    "--frame", "/Volumes/Scans/_DSC5012.NEF",
+                    // Clamped to the frame: y0 -0.2 becomes 0.
+                    "--region", "0.1000,0.0000,0.6000,0.2500",
+                ]
+        )
+        #expect(BaseFrameRegion(normalizedRect: CGRect(x: 0.5, y: 0.5, width: 0, height: 0.2)) == nil)
+    }
+
+    @Test("a drag maps to a clamped rectangle of the preview")
+    func baseFrameRegionDragRect() throws {
+        let size = CGSize(width: 400, height: 200)
+        let rect = try #require(
+            BaseFrameRegionSheet.normalizedRect(
+                from: CGPoint(x: 300, y: 150), to: CGPoint(x: 100, y: 250), in: size
+            )
+        )
+        #expect(rect == CGRect(x: 0.25, y: 0.75, width: 0.5, height: 0.25))
+        #expect(
+            BaseFrameRegionSheet.normalizedRect(
+                from: CGPoint(x: 10, y: 10), to: CGPoint(x: 10, y: 50), in: size
+            ) == nil
+        )
+    }
+
     // MARK: - Export downsampling
 
     @Test("export carries the required flags and omits --downsample by default")
