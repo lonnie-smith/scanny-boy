@@ -64,6 +64,18 @@ CI runs the same defaults (fast tiers only) through the same script; the
 integration tiers skip there anyway because the sample NEFs and the built app
 are absent.
 
+## Development data is isolated from the installed app
+
+`AppEnvironment` (Swift) picks a profile: Release builds are *production*,
+Debug builds are *development* (`ScannyBoy-Dev` support and cache folders,
+`~/Pictures/Scanny Boy Dev*`, a `.dev` preferences suite) and the hosted unit
+tests use throwaway temp directories. The Python side defaults to the
+`ScannyBoy-Dev` database unless it is the frozen helper or
+`SCANNY_BOY_LIBRARY_DB` is set. When you add a new place the app reads or
+writes (a folder, a cache, a preference), route it through `AppEnvironment`
+rather than naming `~/Library/...` or `~/Pictures/...` directly, and do not
+run `scripts/clean-start.sh --production`.
+
 ## Sample fixtures
 
 `tests/fixtures/nef/` holds the real sample NEFs (ignored by Git) plus the

@@ -5,31 +5,47 @@
 # What gets removed:
 #   1. Registered roll folders (from the `rolls` table in the library DB),
 #      including any `*.scanny-staging` crash-recovery dirs inside them.
-#   2. The library database itself: `~/Library/Application Support/ScannyBoy/`
-#      (or the path in `SCANNY_BOY_LIBRARY_DB`, plus its `-wal`/`-shm` files).
+#   2. The library database itself, plus its `-wal`/`-shm` files.
+#
+# Which database: by default the DEVELOPMENT one,
+# `~/Library/Application Support/ScannyBoy-Dev/library.db` — the one Debug
+# builds and source runs use. The installed app's real library
+# (`.../ScannyBoy/library.db`) is only touched with `--production`.
+# `SCANNY_BOY_LIBRARY_DB` overrides the path in either mode.
 #
 # Roll folders are deleted in full. If you keep irreplaceable source scans
 # (NEFs) inside a roll folder, move them out first — the script lists every
 # folder it is about to delete and asks for confirmation unless `-y` is given.
 #
-# Usage: scripts/clean-start.sh [-y]
+# Usage: scripts/clean-start.sh [-y] [--production]
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ASSUME_YES=false
-if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
-	ASSUME_YES=true
-fi
+SUPPORT_DIR_NAME="ScannyBoy-Dev"
+for arg in "$@"; do
+	case "$arg" in
+		-y | --yes) ASSUME_YES=true ;;
+		--production) SUPPORT_DIR_NAME="ScannyBoy" ;;
+		*)
+			echo "usage: $0 [-y] [--production]" >&2
+			exit 2
+			;;
+	esac
+done
 
-DB_PATH="${SCANNY_BOY_LIBRARY_DB:-$HOME/Library/Application Support/ScannyBoy/library.db}"
+DB_PATH="${SCANNY_BOY_LIBRARY_DB:-$HOME/Library/Application Support/$SUPPORT_DIR_NAME/library.db}"
 
 # The override may point at a differently named file; -wal/-shm always sit
 # beside it with the same stem.
 DB_SIDECARS=("${DB_PATH}-wal" "${DB_PATH}-shm")
 
 echo "ScannyBoy clean start"
+if [[ "$SUPPORT_DIR_NAME" == "ScannyBoy" && -z "${SCANNY_BOY_LIBRARY_DB:-}" ]]; then
+	echo "  *** PRODUCTION data: this is the library the installed app uses. ***"
+fi
 echo "  Database:      $DB_PATH"
 echo
 

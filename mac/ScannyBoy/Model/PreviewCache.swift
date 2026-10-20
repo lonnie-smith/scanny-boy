@@ -24,7 +24,10 @@ struct PreviewCache: Sendable {
     /// a test never reads or removes the real user's caches.
     let cachesDirectory: URL
 
-    static let shared = PreviewCache(cachesDirectory: .cachesDirectory)
+    /// The app's own cache: the real `~/Library/Caches` in production, a
+    /// separate directory in development and under test
+    /// (`AppEnvironment.cachesDirectory`).
+    static let shared = PreviewCache(cachesDirectory: AppEnvironment.cachesDirectory)
 
     /// Everything this app caches, under one directory.
     var root: URL {
