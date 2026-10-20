@@ -77,6 +77,9 @@ struct MetadataStageView: View {
                         style: .error
                     )
                 }
+                if let metadataError = edit.metadataError {
+                    IssueLabel(issue: metadataError, style: .error)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
@@ -95,7 +98,8 @@ struct MetadataStageView: View {
                     CommitTextField(
                         title: "Name",
                         committedValue: roll.rollName,
-                        prompt: "Roll name"
+                        prompt: "Roll name",
+                        editTarget: AnyHashable(roll.rollID)
                     ) { newName in
                         commitRename(roll, to: newName)
                     }
@@ -120,19 +124,20 @@ struct MetadataStageView: View {
                         title: "Capture date",
                         committedValue: roll.metadata.rollCaptureDate
                     ) { date in
-                        Task { await edit.setRollCaptureDate(date) }
+                        edit.setRollCaptureDate(date)
                     }
                 }
             }
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(EditModel.catalogedFields, id: \.self) { field in
                     rollField(fieldLabel(field)) {
-                        TypeaheadField(
+                        CommitTextField(
                             title: fieldLabel(field),
                             committedValue: roll.metadata[field],
-                            suggestions: edit.catalog[field] ?? []
+                            suggestions: edit.catalog[field] ?? [],
+                            editTarget: AnyHashable(roll.rollID)
                         ) { value in
-                            Task { await edit.setRollField(field, to: value) }
+                            edit.setRollField(field, to: value)
                         }
                         .frame(maxWidth: 280)
                     }
@@ -157,18 +162,29 @@ struct MetadataStageView: View {
         }
     }
 
-    private func commitRename(_ roll: RollManifest, to newName: String?) {
-        guard let newName else { return }
+    /// An emptied name is not a rename: nothing is written, and the field
+    /// falls back to the roll's current name.
+    private func commitRename(_ roll: RollManifest, to newName: String?) -> Task<Void, Never>? {
+        guard let newName else { return nil }
         guard let libraryRoll = library.rolls.first(where: { $0.rollID == roll.rollID }) else {
             renameError = "The roll could not be found in the library."
-            return
+            return nil
         }
-        Task {
+        return Task {
             do {
-                _ = try await library.renameRoll(
+                let renamed = try await library.renameRoll(
                     libraryRoll, to: newName, runIsActive: activity.isBusy
                 )
                 renameError = nil
+                // A name that slugs to the same folder leaves the roll's
+                // URL unchanged, so the rescan re-reads nothing; without
+                // this the field would keep showing the old name. A moved
+                // folder is re-read when the rescan hands over its new URL.
+                if renamed.path.standardizedFileURL.path
+                    == edit.rollURL?.standardizedFileURL.path
+                {
+                    edit.refresh()
+                }
             } catch {
                 renameError = error.localizedDescription
             }
@@ -258,9 +274,10 @@ struct MetadataStageView: View {
                 CommitDatePicker(
                     title: "Capture date",
                     committedValue: singleOverride,
+                    suggestedValue: edit.roll?.metadata.rollCaptureDate,
                     showsTitle: false
                 ) { date in
-                    Task { await edit.setNegativeCaptureDate(targets, to: date) }
+                    edit.setNegativeCaptureDate(targets, to: date)
                 }
                 .disabled(targets.isEmpty)
             }
@@ -298,17 +315,21 @@ struct MetadataStageView: View {
     }
 
     private func negativeMetadataField(_ field: String) -> some View {
+        // Captured now: `targets` reads the live selection, and the field
+        // commits an edit to the frames it was begun on.
+        let targets = self.targets
         let values = edit.effectiveValues(of: targets, field: field)
         let isMixed = values.count > 1
         let committed: String? = isMixed ? nil : values.first ?? nil
         return rollField(fieldLabel(field)) {
-            TypeaheadField(
+            CommitTextField(
                 title: fieldLabel(field),
                 committedValue: committed,
                 suggestions: edit.catalog[field] ?? [],
-                prompt: isMixed ? "<mixed values>" : nil
+                prompt: isMixed ? "<mixed values>" : nil,
+                editTarget: AnyHashable(targets.map(\.negativeID))
             ) { value in
-                Task { await edit.setNegativeField(targets, field: field, to: value) }
+                edit.setNegativeField(targets, field: field, to: value)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

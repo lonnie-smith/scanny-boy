@@ -79,8 +79,18 @@ struct EditModelTests {
     private static func rollInfoEvent(
         negatives: [String], metadata: String? = nil
     ) -> String {
+        TestEvents.line(
+            #"{"event":"roll_info","manifest":\#(manifestJSON(negatives: negatives, metadata: metadata))}"#
+        )
+    }
+
+    /// The manifest object shared by the `roll_info` and `metadata_updated`
+    /// events.
+    private static func manifestJSON(
+        negatives: [String], metadata: String? = nil
+    ) -> String {
         let metadataJSON = metadata ?? #"{"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,"city":null,"state":null,"camera":null,"lens":null,"caption":null}"#
-        let manifest = """
+        return """
             {"manifest_format_version":5,"manifest_kind":"roll","scanny_boy_version":"0.3.0",\
             "roll_id":"roll-1","roll_name":"Test Roll",\
             "created_at":"2026-08-02T00:00:00Z","updated_at":"2026-08-02T00:00:00Z",\
@@ -90,7 +100,6 @@ struct EditModelTests {
             "negatives":[\(negatives.joined(separator: ","))],\
             "metadata":\(metadataJSON)}
             """
-        return TestEvents.line(#"{"event":"roll_info","manifest":\#(manifest)}"#)
     }
 
     @Test("Effective metadata resolves the live fallback")
@@ -1886,6 +1895,208 @@ struct EditModelTests {
             EditModel.renderGeneration(of: negative(summary()))
                 == EditModel.renderGeneration(of: negative(summary()))
         )
+    }
+
+    // MARK: - Metadata writes
+
+    private static func rollMetadataJSON(city: String) -> String {
+        """
+        {"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,\
+        "city":"\(city)","state":null,"camera":null,"lens":null,"caption":null}
+        """
+    }
+
+    /// A helper whose `roll info` answers the two-negative roll (roll-level
+    /// city "Coimbra") and whose `metadata set` appends its whole argv to
+    /// `.metadata-set-log`, sleeps long enough that overlapping writes would
+    /// really overlap, then answers `setLines`. Any other call (the
+    /// `edit list-spots` a roll fetch triggers) exits quietly.
+    private static func metadataRunner(
+        _ directory: URL, setLines: [String]
+    ) throws -> CLIRunner {
+        func echoLines(_ lines: [String]) -> String {
+            lines.map { "echo '\($0)'" }.joined(separator: "\n")
+        }
+        let initial = rollInfoEvent(
+            negatives: [
+                negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil),
+                negativeJSON(negativeID: "n2", sequence: 2, intended: nil, applied: nil),
+            ],
+            metadata: rollMetadataJSON(city: "Coimbra")
+        )
+        let log = directory.appending(path: ".metadata-set-log").path
+        let script = """
+            if [ "$1" = "roll" ] && [ "$2" = "info" ]; then
+            echo '\(initial)'
+                exit 0
+            fi
+            if [ "$1" = "metadata" ] && [ "$2" = "set" ]; then
+            echo "$*" >> '\(log)'
+            sleep 0.2
+            \(echoLines(setLines))
+                exit 0
+            fi
+            exit 0
+            """
+        let executable = try TestSupport.writeTestExecutable(script, in: directory)
+        return CLIRunner(executable: executable)
+    }
+
+    /// The `metadata set` confirmation: the roll with its city changed to
+    /// "Faro", so a test can tell the update landed.
+    private static func metadataUpdatedLines() -> [String] {
+        let updated = manifestJSON(
+            negatives: [
+                negativeJSON(negativeID: "n1", sequence: 1, intended: nil, applied: nil),
+                negativeJSON(negativeID: "n2", sequence: 2, intended: nil, applied: nil),
+            ],
+            metadata: rollMetadataJSON(city: "Faro")
+        )
+        return [
+            TestEvents.line(#"{"event":"started","command":"metadata set"}"#),
+            TestEvents.line(#"{"event":"metadata_updated","manifest":\#(updated)}"#),
+            TestEvents.line(#"{"event":"finished","status":"success","exit_status":0}"#),
+        ]
+    }
+
+    private static func metadataFailureLines() -> [String] {
+        [
+            TestEvents.line(#"{"event":"started","command":"metadata set"}"#),
+            TestEvents.line(
+                #"{"event":"error","code":"INVALID_METADATA","message":"city is not valid"}"#
+            ),
+            TestEvents.line(#"{"event":"finished","status":"failed","exit_status":1}"#),
+        ]
+    }
+
+    /// One entry per `metadata set` invocation, in call order.
+    private static func metadataSetLog(in directory: URL) -> [String] {
+        let text =
+            (try? String(
+                contentsOf: directory.appending(path: ".metadata-set-log"), encoding: .utf8))
+            ?? ""
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    @Test("Metadata writes queue rather than drop")
+    func testMetadataWritesQueueRatherThanDrop() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.metadataRunner(directory, setLines: Self.metadataUpdatedLines())
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        let negatives = model.visibleNegatives
+        #expect(negatives.map(\.negativeID) == ["n1", "n2"])
+        #expect(model.roll?.metadata.city == "Coimbra")
+
+        // The second commit arrives while the first is still in flight (the
+        // fake sleeps); it must wait its turn, not be dropped.
+        let firstWrite = model.setNegativeField([negatives[0]], field: "city", to: "Lisbon")
+        let secondWrite = model.setNegativeField([negatives[1]], field: "city", to: "Porto")
+        #expect(firstWrite != nil)
+        #expect(secondWrite != nil)
+        #expect(model.pendingMetadataWrites == 2)
+        #expect(model.isSettingMetadata)
+
+        await firstWrite?.value
+        await secondWrite?.value
+
+        let lines = Self.metadataSetLog(in: directory)
+        #expect(lines.count == 2)
+        if lines.count == 2 {
+            #expect(lines[0].hasPrefix("metadata set --roll /tmp/roll --payload "))
+            #expect(lines[0].contains("Lisbon"))
+            #expect(lines[0].contains("n1"))
+            #expect(lines[1].contains("Porto"))
+            #expect(lines[1].contains("n2"))
+        }
+        #expect(model.pendingMetadataWrites == 0)
+        #expect(!model.isSettingMetadata)
+        #expect(model.metadataError == nil)
+        #expect(model.roll?.metadata.city == "Faro")
+        // The typeahead catalog saw both commits, newest first.
+        #expect(model.catalog["city"] == ["Porto", "Lisbon"])
+    }
+
+    @Test("A failed metadata write surfaces and leaves the roll as it was")
+    func testFailedMetadataWriteSurfacesAndLeavesTheRollAlone() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.metadataRunner(directory, setLines: Self.metadataFailureLines())
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+
+        let write = model.setRollField("city", to: "Faro")
+        await write?.value
+
+        #expect(Self.metadataSetLog(in: directory).count == 1)
+        #expect(model.metadataError?.code == .invalidMetadata)
+        #expect(model.metadataError?.message == "city is not valid")
+        #expect(model.roll?.metadata.city == "Coimbra")
+        #expect(model.pendingMetadataWrites == 0)
+        #expect(!model.isSettingMetadata)
+    }
+
+    @Test("A metadata write without a loaded roll or targets queues nothing")
+    func testNoMetadataWriteWithoutALoadedRoll() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.metadataRunner(directory, setLines: Self.metadataUpdatedLines())
+        let model = EditModel(runner: runner)
+
+        // No roll selected at all.
+        #expect(model.rollURL == nil)
+        #expect(model.setRollField("city", to: "X") == nil)
+        #expect(model.setRollCaptureDate("2026-08-02") == nil)
+        #expect(model.setNegativeCaptureDate([], to: nil) == nil)
+        #expect(model.setNegativeField([], field: "city", to: "X") == nil)
+
+        // A roll selected but not yet loaded takes no write either: the
+        // fetch has not had a chance to run.
+        model.rollURL = URL(filePath: "/tmp/roll")
+        #expect(model.setRollField("city", to: "X") == nil)
+
+        // Once loaded, a write with no targets is still nothing to queue.
+        await model.waitForPendingFetch()
+        #expect(model.setNegativeField([], field: "city", to: "X") == nil)
+
+        #expect(model.pendingMetadataWrites == 0)
+        #expect(!model.isSettingMetadata)
+        #expect(Self.metadataSetLog(in: directory).isEmpty)
+    }
+
+    @Test("A roll switch clears the metadata error")
+    func testRollSwitchClearsTheMetadataError() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = try Self.metadataRunner(directory, setLines: Self.metadataFailureLines())
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+        await model.setRollField("city", to: "Faro")?.value
+        #expect(model.metadataError?.code == .invalidMetadata)
+
+        model.rollURL = URL(filePath: "/tmp/other-roll")
+        #expect(model.metadataError == nil)
+        await model.waitForPendingFetch()
+        #expect(model.metadataError == nil)
     }
 }
 

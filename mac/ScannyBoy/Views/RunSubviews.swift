@@ -259,13 +259,15 @@ struct FilmStockField: View {
         VStack(alignment: .leading, spacing: 8) {
             LabeledContent("Film") {
                 HStack(spacing: 6) {
-                    TypeaheadField(
+                    CommitTextField(
                         title: "Film",
                         committedValue: filmStock,
                         suggestions: catalog.stocks,
-                        prompt: "Type or choose a film stock",
-                        onCommit: onCommit
-                    )
+                        prompt: "Type or choose a film stock"
+                    ) { stock in
+                        onCommit(stock)
+                        return nil
+                    }
                     .labelsHidden()
                     .accessibilityIdentifier("filmStockField")
                     stockMenu
