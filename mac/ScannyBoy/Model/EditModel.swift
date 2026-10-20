@@ -43,6 +43,7 @@ final class EditModel {
             roll = nil
             selectedNegativeID = nil
             selectedNegativeIDs = []
+            metadataError = nil
             startRollFetch(rollURL: rollURL)
         }
     }
@@ -1412,9 +1413,21 @@ final class EditModel {
 
     // MARK: - Metadata editing
 
-    /// Set while one `metadata set` round trip is in flight, with the same
-    /// one-helper-at-a-time discipline as `isRotating`/`isDeleting`.
-    private(set) var isSettingMetadata = false
+    /// How many `metadata set` writes are queued or in flight. Writes run
+    /// one at a time, in commit order — tabbing from one field to the next
+    /// commits twice in quick succession, and the second must wait its
+    /// turn rather than be dropped.
+    private(set) var pendingMetadataWrites = 0
+
+    /// Set while any `metadata set` write is queued or in flight — a soft
+    /// "Saving…" indicator, not a gate.
+    var isSettingMetadata: Bool { pendingMetadataWrites > 0 }
+
+    /// The last `metadata set` failure for the roll on screen — the CLI's
+    /// own words. Cleared by the next successful write and by a roll switch.
+    private(set) var metadataError: ConfigurationModel.Issue?
+
+    @ObservationIgnored private var metadataWriteTail: Task<Void, Never>?
 
     /// The metadata-fields catalog: previously-entered values per field,
     /// most-recently-used first — the typeahead's suggestions. `caption` is
@@ -1473,72 +1486,146 @@ final class EditModel {
         Set(targets.map { effectiveValue(of: $0, field: field) })
     }
 
-    // The `metadata set` payloads below all funnel through one session
-    // runner: the whole payload is validated by the CLI before anything is
-    // written, and its `metadata_updated` confirmation carries the updated
-    // manifest, which lands in memory the way an `edit_recorded` does — no
-    // `roll info` round trip.
+    // The `metadata set` writes below are synchronous to call: each
+    // captures the roll on screen at the moment of the commit, so a write
+    // that waits behind another still lands on the roll it was made
+    // against, never on one selected since. Each payload is validated by
+    // the CLI before anything is written, and its `metadata_updated`
+    // confirmation carries the updated manifest, which lands in memory the
+    // way an `edit_recorded` does — no `roll info` round trip. The returned
+    // task finishes when the write has landed or failed; `nil` means
+    // nothing was queued.
 
     /// Sets (or clears, with `nil`) the roll's capture date.
-    func setRollCaptureDate(_ date: String?) async {
-        await runMetadataSet(payload: ["roll": ["capture_date": date as String?]])
+    @discardableResult
+    func setRollCaptureDate(_ date: String?) -> Task<Void, Never>? {
+        enqueueMetadataSet(payload: ["roll": ["capture_date": date as String?]])
     }
 
     /// Sets (or clears, with `nil`) one roll-level metadata field.
-    func setRollField(_ field: String, to value: String?) async {
-        await runMetadataSet(payload: ["roll": [field: value as String?]])
-        rememberCatalogValue(value, for: field)
-        if field == "film", roll?.metadata.film == value {
-            await onRollFilmChanged?(value)
+    @discardableResult
+    func setRollField(_ field: String, to value: String?) -> Task<Void, Never>? {
+        enqueueMetadataSet(payload: ["roll": [field: value as String?]]) { model in
+            model.rememberCatalogValue(value, for: field)
+            if field == "film", model.roll?.metadata.film == value {
+                await model.onRollFilmChanged?(value)
+            }
         }
     }
 
     /// Sets (or clears, with `nil`) one metadata field on every selected
     /// negative — one batched CLI invocation for the whole selection.
+    @discardableResult
     func setNegativeField(
         _ targets: [RollManifest.Negative], field: String, to value: String?
-    ) async {
-        guard !targets.isEmpty else { return }
+    ) -> Task<Void, Never>? {
+        guard !targets.isEmpty else { return nil }
         var negatives: [String: [String: String?]] = [:]
         for target in targets {
             negatives[target.negativeID] = [field: value as String?]
         }
-        await runMetadataSet(payload: ["negatives": negatives])
-        rememberCatalogValue(value, for: field)
+        return enqueueMetadataSet(payload: ["negatives": negatives]) { model in
+            model.rememberCatalogValue(value, for: field)
+        }
     }
 
-    /// Sets (or clears, with `nil`) one negative's date override.
+    /// Sets (or clears, with `nil`) the selected negatives' date override.
+    @discardableResult
     func setNegativeCaptureDate(
         _ targets: [RollManifest.Negative], to date: String?
-    ) async {
-        guard !targets.isEmpty else { return }
+    ) -> Task<Void, Never>? {
+        guard !targets.isEmpty else { return nil }
         var negatives: [String: [String: String?]] = [:]
         for target in targets {
             negatives[target.negativeID] = ["capture_date": date as String?]
         }
-        await runMetadataSet(payload: ["negatives": negatives])
+        return enqueueMetadataSet(payload: ["negatives": negatives])
     }
 
-    private func runMetadataSet(payload: [String: Any]) async {
-        guard let rollURL, !isSettingMetadata else { return }
-        isSettingMetadata = true
-        defer { isSettingMetadata = false }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+    /// Queues one `metadata set` behind any already queued. The roll is
+    /// captured now: a roll that is not loaded (just switched, still
+    /// fetching) takes no writes, so a commit racing a roll switch is
+    /// dropped rather than written to the newly selected roll. A result
+    /// that lands after the user moved to another roll is not shown —
+    /// the write itself is still durable on the roll it was made against.
+    private func enqueueMetadataSet(
+        payload: [String: Any],
+        onSuccess: (@MainActor @Sendable (EditModel) async -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        guard let rollURL, roll != nil,
+            let data = try? JSONSerialization.data(withJSONObject: payload),
             let json = String(data: data, encoding: .utf8)
-        else { return }
+        else { return nil }
+        let previous = metadataWriteTail
+        pendingMetadataWrites += 1
+        let task = Task { [weak self, runner] in
+            await previous?.value
+            let result = await Self.runMetadataSet(runner: runner, roll: rollURL, payload: json)
+            guard let self else { return }
+            defer { self.pendingMetadataWrites -= 1 }
+            guard self.rollURL == rollURL else { return }
+            switch result {
+            case .success(let manifest):
+                self.roll = manifest
+                self.metadataError = nil
+                await onSuccess?(self)
+            case .failure(let issue):
+                self.metadataError = issue
+            }
+        }
+        metadataWriteTail = task
+        return task
+    }
+
+    private enum MetadataSetResult: Sendable {
+        case success(RollManifest)
+        case failure(ConfigurationModel.Issue)
+    }
+
+    private static func runMetadataSet(
+        runner: CLIRunner, roll: URL, payload: String
+    ) async -> MetadataSetResult {
+        // Recorded rather than returned immediately (M4): see
+        // `RollLibrary.createRoll`.
+        var manifest: RollManifest?
+        var issue: ConfigurationModel.Issue?
         do {
             for await output in try await runner
-                .session(for: .metadataSet(roll: rollURL, payload: json)).start()
+                .session(for: .metadataSet(roll: roll, payload: payload)).start()
             {
-                if case .event(let event) = output, event.kind == .metadataUpdated,
-                    let fields = event.manifest
-                {
-                    roll = RollManifest(fields: fields)
+                guard case .event(let event) = output else { continue }
+                switch event.kind {
+                case .metadataUpdated:
+                    if let fields = event.manifest {
+                        manifest = RollManifest(fields: fields)
+                    }
+                case .error:
+                    if let code = event.code {
+                        issue = ConfigurationModel.Issue(
+                            code: code, message: event.message ?? "Metadata could not be saved."
+                        )
+                    }
+                default:
+                    break
                 }
             }
         } catch {
-            return
+            return .failure(
+                ConfigurationModel.Issue(
+                    code: .invalidMetadata,
+                    message: "Metadata could not be saved: \(error.localizedDescription)"
+                )
+            )
         }
+        if let issue { return .failure(issue) }
+        guard let manifest else {
+            return .failure(
+                ConfigurationModel.Issue(
+                    code: .invalidMetadata, message: "Metadata could not be saved."
+                )
+            )
+        }
+        return .success(manifest)
     }
 
     /// Moves a just-committed value to the catalog's head so the typeahead

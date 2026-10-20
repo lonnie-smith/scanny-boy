@@ -156,11 +156,40 @@ struct AppKeyboardCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .pasteboard) {
+            // Replacing `.pasteboard` removes the standard items, and text
+            // fields get ⌘X/⌘C/⌘V only through the Edit menu's key
+            // equivalents — so put them back, routed up the responder chain.
+            Button("Cut") {
+                NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
+            }
+            .keyboardShortcut("x", modifiers: .command)
+
+            Button("Copy") {
+                NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+            }
+            .keyboardShortcut("c", modifiers: .command)
+
+            Button("Paste") {
+                NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+            }
+            .keyboardShortcut("v", modifiers: .command)
+
+            Divider()
+
             Button("Select All") {
-                AppKeyboard.post(.scannyBoySelectAll)
+                // While a text field is being edited ⌘A selects its text, not
+                // every negative.
+                if AppKeyboard.isTextInputFirstResponder() {
+                    NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+                } else {
+                    AppKeyboard.post(.scannyBoySelectAll)
+                }
             }
             .keyboardShortcut("a", modifiers: .command)
-            .disabled(!keyboard.canSelectAll)
+            // Do not `.disabled(!keyboard.canSelectAll)` here: a disabled key
+            // equivalent swallows ⌘A (and beeps) in a text field on screens
+            // where negative selection is unavailable — `ContentView` guards
+            // the negative-selection action instead.
 
             Button("Deselect All") {
                 AppKeyboard.post(.scannyBoyDeselectAll)
