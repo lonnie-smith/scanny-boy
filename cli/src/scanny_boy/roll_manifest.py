@@ -50,9 +50,10 @@ ROLL_MANIFEST_KIND = "roll"
 # The extended metadata fields, in display order. Every one lives on both
 # `RollMetadata` (the roll-level fallback) and `NegativeMetadata` (the
 # explicit per-image value); `effective_metadata` resolves the pair.
-METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+METADATA_FIELDS = ("city", "state", "lens", "caption")
 # Roll-only extended metadata: no negative columns, no per-image override.
-ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
+# A roll is shot on one body, so `camera` has no per-negative value.
+ROLL_ONLY_METADATA_FIELDS = ("film", "iso", "camera")
 
 # `short_id` starts at six characters of the run's UUID and lengthens until
 # it is free within the roll.
@@ -206,11 +207,11 @@ class NegativeMetadata:
     fallback" — the effective value is the negative's own, else the roll's.
     Serialized as the negative's nested `metadata` object; every key is
     required-nullable in `roll-manifest.schema.json`, so rows written before
-    the feature existed (which carry five NULLs) read back unchanged."""
+    the feature existed (which carry NULLs) read back unchanged. `camera` is
+    roll-only and has no field here."""
 
     city: str | None = None
     state: str | None = None
-    camera: str | None = None
     lens: str | None = None
     caption: str | None = None
 
@@ -326,8 +327,9 @@ class NegativeRecord:
 class RollMetadata:
     """The roll's metadata stage record. `roll_capture_date` is the
     fallback date every negative without a `date_override` ranks on; the
-    five extended-metadata fields are the roll-level fallbacks each
-    negative without its own value inherits."""
+    extended-metadata fields are the roll-level fallbacks each negative
+    without its own value inherits (`film`, `iso` and `camera` are
+    roll-only: no negative overrides them)."""
 
     roll_capture_date: str | None = None
     last_applied_at: str | None = None
@@ -350,14 +352,26 @@ def effective_metadata(
     explicit value when it has one, else the roll's. Nothing is copied
     between rows — changing a roll-level value instantly covers every
     negative without an explicit one, and a negative added later inherits
-    the roll's values without a write."""
-    result = {
-        field: getattr(negative_metadata, field) or getattr(roll_metadata, field)
-        for field in METADATA_FIELDS
-    }
+    the roll's values without a write. A negative's value that is `None`,
+    empty or whitespace-only is not an override. The roll-only fields
+    (`film`, `iso`, `camera`) always come from the roll."""
+    result: dict[str, str | None] = {}
+    for field in METADATA_FIELDS:
+        # A blank or whitespace-only override is "not defined": it falls
+        # back to the roll's value.
+        result[field] = _present(getattr(negative_metadata, field)) or _present(
+            getattr(roll_metadata, field)
+        )
     for field in ROLL_ONLY_METADATA_FIELDS:
-        result[field] = getattr(roll_metadata, field)
+        result[field] = _present(getattr(roll_metadata, field))
     return result
+
+
+def _present(value: str | None) -> str | None:
+    """The stripped value, or `None` when it is missing or blank."""
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 @dataclasses.dataclass(frozen=True)

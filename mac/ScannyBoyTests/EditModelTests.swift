@@ -102,6 +102,68 @@ struct EditModelTests {
             """
     }
 
+    @Test("Camera is roll-only; lens and caption fall back to the roll per image")
+    func testCameraIsRollOnlyAndLensCaptionFallBack() async throws {
+        #expect(RollManifest.rollOnlyMetadataFields == ["film", "iso", "camera"])
+        #expect(RollManifest.metadataFields == ["city", "state", "lens", "caption"])
+
+        let rollMetadata = #"{"roll_capture_date":null,"last_applied_at":null,"film":null,"iso":null,"city":null,"state":null,"camera":"Pentax 67","lens":"90mm","caption":"Roll caption"}"#
+        // A negative from the current CLI carries no `camera` key at all.
+        let inherited = Self.negativeJSON(
+            negativeID: "n1", sequence: 1, intended: nil, applied: nil,
+            metadata: #"{"city":null,"state":null,"lens":null,"caption":null}"#
+        )
+        let overridden = Self.negativeJSON(
+            negativeID: "n2", sequence: 2, intended: nil, applied: nil,
+            metadata: #"{"city":null,"state":null,"lens":"55mm","caption":"Own caption"}"#
+        )
+        // A manifest from before the change may still carry a per-negative
+        // `camera`; it is ignored rather than shadowing the roll's camera.
+        let legacy = Self.negativeJSON(
+            negativeID: "n3", sequence: 3, intended: nil, applied: nil,
+            metadata: #"{"city":null,"state":null,"camera":"Stale","lens":null,"caption":null}"#
+        )
+        let runner = try Self.isolatedRunner(
+            rollInfoLines: [
+                Self.rollInfoEvent(negatives: [inherited, overridden, legacy], metadata: rollMetadata)
+            ]
+        )
+        let model = EditModel(runner: runner)
+
+        model.rollURL = URL(filePath: "/tmp/roll")
+        await model.waitForPendingFetch()
+
+        let negatives = model.visibleNegatives
+        #expect(negatives.count == 3)
+        #expect(model.roll?.metadata.camera == "Pentax 67")
+        for negative in negatives {
+            #expect(model.effectiveValue(of: negative, field: "camera") == "Pentax 67")
+        }
+        #expect(model.effectiveValue(of: negatives[0], field: "lens") == "90mm")
+        #expect(model.effectiveValue(of: negatives[0], field: "caption") == "Roll caption")
+        #expect(model.effectiveValue(of: negatives[1], field: "lens") == "55mm")
+        #expect(model.effectiveValue(of: negatives[1], field: "caption") == "Own caption")
+        #expect(negatives[0].metadata.lens == nil)
+        #expect(negatives[1].metadata.lens == "55mm")
+        #expect(negatives[2].metadata["camera"] == nil)
+    }
+
+    @Test("ImageMetadata.effective prefers the negative's own value, else the roll's")
+    func testImageMetadataEffectiveFallback() {
+        let roll = RollManifest.Metadata(
+            rollCaptureDate: nil, lastAppliedAt: nil, film: nil, iso: nil,
+            city: nil, state: nil, camera: "Nikon F3", lens: "50mm", caption: "Roll"
+        )
+        let own = RollManifest.ImageMetadata(city: nil, state: nil, lens: "35mm", caption: nil)
+
+        #expect(RollManifest.ImageMetadata.effective(own, roll: roll, field: "lens") == "35mm")
+        #expect(RollManifest.ImageMetadata.effective(own, roll: roll, field: "caption") == "Roll")
+        #expect(RollManifest.ImageMetadata.effective(.empty, roll: roll, field: "lens") == "50mm")
+        // Camera is not an image field: it always resolves to the roll's.
+        #expect(own["camera"] == nil)
+        #expect(RollManifest.ImageMetadata.effective(own, roll: roll, field: "camera") == "Nikon F3")
+    }
+
     @Test("Effective metadata resolves the live fallback")
     func testEffectiveMetadataResolvesLiveFallback() async throws {
         // The roll carries the fallback city; the second negative has its
@@ -112,7 +174,7 @@ struct EditModelTests {
         )
         let explicit = Self.negativeJSON(
             negativeID: "n2", sequence: 2, intended: nil, applied: nil,
-            metadata: #"{"city":"Lisbon","state":null,"camera":null,"lens":null,"caption":null}"#
+            metadata: #"{"city":"Lisbon","state":null,"lens":null,"caption":null}"#
         )
         let runner = try Self.isolatedRunner(
             rollInfoLines: [Self.rollInfoEvent(negatives: [inherited, explicit], metadata: rollMetadata)]

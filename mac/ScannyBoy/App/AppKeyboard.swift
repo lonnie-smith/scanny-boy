@@ -120,6 +120,18 @@ enum AppKeyboard {
         }
         return false
     }
+
+    /// Ends any text editing by resigning the field editor. Blurring a
+    /// `CommitTextField` this way commits its edit (to the target the edit
+    /// began on), and leaves no text field to claim ⌘A and the arrow keys
+    /// — the Metadata tab calls it on arrival and when a filmstrip
+    /// thumbnail, the preview or the background is clicked, none of which
+    /// take first responder from a focused field on their own.
+    @MainActor
+    static func endTextEditing() {
+        guard isTextInputFirstResponder() else { return }
+        _ = NSApp.keyWindow?.makeFirstResponder(nil)
+    }
 }
 
 extension Notification.Name {

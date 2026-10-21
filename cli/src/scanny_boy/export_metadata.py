@@ -10,22 +10,27 @@ rewritten. The exporters' base write carries the pixels, the ICC profile
 and the boxes; this module *builds* the two box payloads:
 
 - `build_exif` — a little-endian TIFF stream: IFD0 with
-  `ImageDescription` (270) and `Model` (272), plus the nested EXIF IFD
-  with `DateTimeOriginal` (36867), `SubSecTimeOriginal` (37521) and
-  `LensModel` (42036). Built with `tifftools` over an in-memory 1x1
-  placeholder image — readers take the tags from IFD0 and ignore the
-  strip — because hand-rolling nested-IFD offsets by hand is the
-  fiddliest part of this and there is no reason to do it.
+  `ImageDescription` (270) and `Model` (272, the roll's camera), plus the
+  nested EXIF IFD with `DateTimeOriginal` (36867), `SubSecTimeOriginal`
+  (37521), `LensModel` (42036) and `ISOSpeedRatings` (34855, SHORT — only
+  when the roll's ISO text is a plain integer 1..65535, optionally
+  prefixed `ISO`; anything else is left to the XMP). Built with
+  `tifftools` over an in-memory 1x1 placeholder image — readers take the
+  tags from IFD0 and ignore the strip — because hand-rolling nested-IFD
+  offsets by hand is the fiddliest part of this and there is no reason
+  to do it.
 - `build_xmp` — the XMP packet: `dc:description` (the caption),
-  `photoshop:City`, `photoshop:State`, and the `scannyboy:provenance`
-  record (the file's interpretability record — what the published TIFF's
-  `ImageDescription` JSON used to carry, plus what the render actually
-  did).
+  `photoshop:City`, `photoshop:State`, the roll's `scannyboy:film` and
+  `scannyboy:iso` (verbatim text, when set), and the
+  `scannyboy:provenance` record (the file's interpretability record —
+  what the published TIFF's `ImageDescription` JSON used to carry, plus
+  what the render actually did).
 
 Effective values follow the live-fallback rule: the negative's explicit
-value, else the roll's. A field nobody set writes nothing at all — no
-empty placeholders in the output file, and no Exif box when nothing is
-set.
+value (when defined — `None`, empty and whitespace-only are not), else the
+roll's; `camera`, `film` and `iso` are roll-only and always the roll's. A
+field nobody set writes nothing at all — no empty placeholders in the
+output file, and no Exif box when nothing is set.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import dataclasses
 import datetime
 import io
 import json
+import re
 from xml.sax.saxutils import escape
 
 import numpy as np
@@ -55,6 +61,9 @@ XMP_DESCRIPTION = 700
 DATE_TIME_ORIGINAL = 36867
 SUBSEC_TIME_ORIGINAL = 37521
 LENS_MODEL = 42036
+ISO_SPEED_RATINGS = 34855
+
+_ISO_PATTERN = re.compile(r"(?:ISO\s*)?(\d{1,5})", re.IGNORECASE)
 
 # The provenance record's namespace: a JSON string in a
 # `scannyboy:provenance` property — what makes an exported file
@@ -82,6 +91,21 @@ class ExportMetadata:
         return any(
             getattr(self, field.name) is not None for field in dataclasses.fields(self)
         )
+
+
+def parse_iso(text: str | None) -> int | None:
+    """The EXIF `ISOSpeedRatings` value for a free-text ISO, or `None`.
+    Accepts a plain integer (`"400"`) or one with an `ISO` prefix
+    (`"ISO 400"`); anything else (`"400/27"`, `"pushed to 1600"`, `"0"`,
+    `"70000"`) yields `None` and so no EXIF tag — the text still reaches
+    the XMP."""
+    if text is None:
+        return None
+    match = _ISO_PATTERN.fullmatch(text.strip())
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if 1 <= value <= 65535 else None
 
 
 def export_metadata_for(
@@ -132,6 +156,16 @@ def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
         if metadata.state is not None
         else ""
     )
+    film = (
+        f"<scannyboy:film>{escape(metadata.film)}</scannyboy:film>"
+        if metadata.film is not None
+        else ""
+    )
+    iso = (
+        f"<scannyboy:iso>{escape(metadata.iso)}</scannyboy:iso>"
+        if metadata.iso is not None
+        else ""
+    )
     provenance_items = (
         f"<scannyboy:provenance>{escape(json.dumps(provenance, sort_keys=True))}"
         "</scannyboy:provenance>"
@@ -144,7 +178,7 @@ def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
         'xmlns:dc="http://purl.org/dc/elements/1.1/" '
         'xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" '
         f'xmlns:scannyboy="{SCANNY_BOY_NS}">'
-        f"{description_items}{city}{state}{provenance_items}"
+        f"{description_items}{city}{state}{film}{iso}{provenance_items}"
         "</rdf:Description>"
         "</rdf:RDF>"
         "</x:xmpmeta>"
@@ -174,6 +208,12 @@ def _exif_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
         tags[LENS_MODEL] = {
             "data": metadata.lens,
             "datatype": tifftools.Datatype.ASCII,
+        }
+    iso = parse_iso(metadata.iso)
+    if iso is not None:
+        tags[ISO_SPEED_RATINGS] = {
+            "data": [iso],
+            "datatype": tifftools.Datatype.SHORT,
         }
     return tags
 

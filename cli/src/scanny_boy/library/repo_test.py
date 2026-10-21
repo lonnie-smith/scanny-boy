@@ -116,6 +116,9 @@ def test_migration_0020_keeps_a_typed_stock_and_fills_its_kind():
     path = db.library_db_path()
     db.reset_engine_cache()
     with sqlite3.connect(path) as connection:
+        # Migration 0021 ran on the way here; the column it dropped is
+        # back for the rewound database, so the replayed 0021 can drop it.
+        connection.execute("ALTER TABLE negatives ADD COLUMN camera TEXT")
         connection.execute("DELETE FROM metadata_values")
         connection.execute("ALTER TABLE metadata_values DROP COLUMN film_kind")
         connection.execute(
@@ -131,6 +134,110 @@ def test_migration_0020_keeps_a_typed_stock_and_fills_its_kind():
     assert values.count("Kodak Portra 400") == 1
     assert values[1:] == [s for s, _ in FILM_STOCK_SEEDS if s != "Kodak Portra 400"]
     assert repo.list_metadata_value_kinds("film")["Kodak Portra 400"] == "colour"
+
+
+# --- roll-only camera (migration 0021) ----------------------------------------
+
+
+def _rewind_to_0020(path: Path) -> None:
+    """Puts the per-test database back at revision 0020: the per-negative
+    `camera` column returns, to be filled by the test."""
+    import sqlite3
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE negatives ADD COLUMN camera TEXT")
+        connection.execute("UPDATE alembic_version SET version_num = '0020'")
+
+
+def _seed_roll(
+    tmp_path: Path, roll_id: str, roll_camera: str | None, cameras: list[str | None]
+) -> Path:
+    """Registers a roll with one negative per entry of `cameras`; the
+    per-negative camera values are written after the rewind (the column
+    does not exist at head)."""
+    from scanny_boy.roll_manifest import load_roll_manifest
+    from scanny_boy.roll_manifest_test import _negative
+
+    directory = tmp_path / roll_id
+    directory.mkdir()
+    manifest = new_roll_manifest(roll_id=roll_id, roll_name=roll_id)
+    manifest.metadata.camera = roll_camera
+    for index in range(len(cameras)):
+        manifest.negatives.append(_negative(negative_id=f"{roll_id}-negative-{index}"))
+    write_roll_manifest(directory, manifest)
+    assert load_roll_manifest(directory).metadata.camera == roll_camera
+    return directory
+
+
+def test_migration_0021_promotes_the_most_common_negative_camera(tmp_path):
+    import sqlite3
+
+    from scanny_boy.roll_manifest import load_roll_manifest
+
+    seeds = {
+        # (roll camera, per-negative cameras) -> expected roll camera
+        "majority": (
+            None,
+            ["Leica M6", "Nikon F3", "Nikon F3", "  ", None],
+            "Nikon F3",
+        ),
+        "tied": (None, ["Pentax K1000", "Minolta X-700"], "Minolta X-700"),
+        "has-camera": ("Canon AE-1", ["Nikon F3", "Nikon F3"], "Canon AE-1"),
+        "blank-roll": ("  ", ["Nikon F3"], "Nikon F3"),
+        "none-typed": (None, [None, "", "   "], None),
+    }
+    dirs = {
+        roll_id: _seed_roll(tmp_path, roll_id, roll_camera, cameras)
+        for roll_id, (roll_camera, cameras, _) in seeds.items()
+    }
+    repo.append_edit(
+        dirs["majority"], "majority-negative-0", repo.ROTATE_OP, {"direction": "cw"}
+    )
+    path = db.library_db_path()
+    db.reset_engine_cache()
+    _rewind_to_0020(path)
+    with sqlite3.connect(path) as connection:
+        for roll_id, (_, cameras, _) in seeds.items():
+            for index, camera in enumerate(cameras):
+                connection.execute(
+                    "UPDATE negatives SET camera = ? WHERE negative_id = ?",
+                    (camera, f"{roll_id}-negative-{index}"),
+                )
+
+    engine = db.open_engine()
+
+    columns = {column["name"] for column in inspect(engine).get_columns("negatives")}
+    assert "camera" not in columns
+    for roll_id, (_, _, expected) in seeds.items():
+        loaded = load_roll_manifest(dirs[roll_id])
+        assert loaded.metadata.camera == expected, roll_id
+        assert len(loaded.negatives) == len(seeds[roll_id][1])
+    # The drop must not cascade into the negatives' edit logs.
+    assert len(repo.edits_for(dirs["majority"], "majority-negative-0")) == 1
+
+
+def test_migration_0021_downgrade_restores_a_nullable_column(tmp_path):
+    import sqlite3
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = import_module(
+        "scanny_boy.library.migrations.versions.0021_roll_only_camera"
+    )
+    engine = db.open_engine()
+    with (
+        engine.begin() as connection,
+        Operations.context(MigrationContext.configure(connection)),
+    ):
+        migration.downgrade()
+    with sqlite3.connect(db.library_db_path()) as connection:
+        columns = {
+            row[1]: row for row in connection.execute("PRAGMA table_info(negatives)")
+        }
+    assert "camera" in columns
+    assert columns["camera"][3] == 0  # the notnull flag: the column is nullable
 
 
 # --- rows written before gain normalization -------------------------------

@@ -527,11 +527,14 @@ published TIFFs. See Phase 3 section 3.8.
 `metadata set` applies one metadata payload to the roll's record in the
 library database — it never touches a TIFF. The payload is
 `{"roll": {field: value}, "negatives": {negative_id: {field: value}}}`:
-roll fields are `capture_date` (the roll capture date), `film`, `iso`
-(roll-only — no negative columns, no per-image override), plus `city`,
-`state`, `camera`, `lens`, `caption`; negative fields are the same five
-shared extended-metadata fields plus `capture_date` (the negative's date
-override). A key that is absent leaves the field untouched; a key present
+roll fields are `capture_date` (the roll capture date), `film`, `iso`,
+`camera` (roll-only — no negative columns, no per-image override), plus
+`city`, `state`, `lens`, `caption`; negative fields are the four shared
+extended-metadata fields (`city`, `state`, `lens`, `caption`) plus
+`capture_date` (the negative's date override). A negative payload carrying
+`film`, `iso` or `camera` fails with `INVALID_METADATA` as an unknown field
+(migration 0021 dropped the per-negative camera, promoting the most common
+value onto a roll that had none). A key that is absent leaves the field untouched; a key present
 with `null` or `""` clears it (a cleared negative field then inherits the
 roll-level fallback; the extended metadata uses live-fallback semantics,
 never copying roll values onto negatives). Every capture-date change

@@ -123,6 +123,8 @@ def two_negative_roll_with_metadata(tmp_path: Path) -> Path:
                 "camera": "Nikon F3",
                 "lens": "50mm f/1.4",
                 "caption": "harbor morning",
+                "film": "Kodak Tri-X 400",
+                "iso": "400",
                 "capture_date": "2026-08-01",
             },
             "negatives": {_OTHER_ID: {"capture_date": "2026-08-02"}},
@@ -646,8 +648,43 @@ def test_export_writes_roll_metadata(two_negative_roll_with_metadata, tmp_path):
     assert "dc:description" in xmp and "harbor morning" in xmp
     assert _exif_tag(tags, 36867) == "2026:08:01 12:00:00"
     assert _exif_tag(tags, 42036) == "50mm f/1.4"
+    assert _exif_tag(tags, 34855) == [400]
+    assert "scannyboy:film>Kodak Tri-X 400<" in xmp
+    assert "scannyboy:iso>400<" in xmp
     # The ImageDescription is the short human string.
     assert tags[270]["data"] == f"{_NEGATIVE_ID}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
+
+
+def _assert_carries_the_roll_values(destination: Path, **expected: str) -> None:
+    """The written file carries the roll fixture's values, except where
+    `expected` replaces one (city, lens, caption)."""
+    values = {
+        "city": "Porto",
+        "lens": "50mm f/1.4",
+        "caption": "harbor morning",
+    } | expected
+    tags = _read_box_tags(destination)
+    assert tags[272]["data"] == "Nikon F3"
+    assert _exif_tag(tags, 42036) == values["lens"]
+    assert _exif_tag(tags, 34855) == [400]
+    xmp = _xmp_text(destination)
+    assert f"photoshop:City>{values['city']}<" in xmp
+    assert "photoshop:State>Oregon<" in xmp
+    assert values["caption"] in xmp
+    assert "scannyboy:film>Kodak Tri-X 400<" in xmp
+    assert "scannyboy:iso>400<" in xmp
+
+
+def test_export_writes_the_roll_metadata_to_every_negative(
+    tmp_path, two_negative_roll_with_metadata
+):
+    output_dir = tmp_path / "export"
+    outcome = run_export(
+        two_negative_roll_with_metadata, output_dir, [], emit=lambda event: None
+    )
+    assert not outcome.failed
+    for name in ("_DSC0001.jxl", "_DSC0002.jxl"):
+        _assert_carries_the_roll_values(output_dir / name)
 
 
 def test_export_negative_value_overrides_roll(
@@ -657,17 +694,52 @@ def test_export_negative_value_overrides_roll(
 
     run_metadata_set(
         two_negative_roll_with_metadata,
-        {"negatives": {"stitch-negative-01": {"city": "Lisbon"}}},
+        {
+            "negatives": {
+                "stitch-negative-01": {
+                    "city": "Lisbon",
+                    "lens": "35mm f/2",
+                    "caption": "tram 28",
+                },
+                # Blank is "not defined": the roll's values still apply.
+                "stitch-negative-02": {"city": "   ", "lens": ""},
+            }
+        },
     )
     output_dir = tmp_path / "export"
     outcome = run_export(
         two_negative_roll_with_metadata, output_dir, [], emit=lambda event: None
     )
     assert not outcome.failed
-    first = _xmp_text(output_dir / "_DSC0001.jxl")
-    second = _xmp_text(output_dir / "_DSC0002.jxl")
-    assert "photoshop:City>Lisbon<" in first
-    assert "photoshop:City>Porto<" in second
+    _assert_carries_the_roll_values(
+        output_dir / "_DSC0001.jxl",
+        city="Lisbon",
+        lens="35mm f/2",
+        caption="tram 28",
+    )
+    _assert_carries_the_roll_values(output_dir / "_DSC0002.jxl")
+
+
+def test_a_second_export_picks_up_roll_metadata_edited_in_between(
+    tmp_path, two_negative_roll_with_metadata
+):
+    """Nothing is cached between runs: the roll is read fresh each time, so
+    a roll-level edit reaches the re-export of an already-exported negative
+    (and with downsampling on)."""
+    from scanny_boy.metadata_edit import run_metadata_set
+
+    roll_dir = two_negative_roll_with_metadata
+    run_export(roll_dir, tmp_path / "first", [], emit=lambda event: None)
+    run_metadata_set(roll_dir, {"roll": {"city": "Lisbon", "iso": "800"}})
+    run_export(
+        roll_dir, tmp_path / "second", [], downsample=6048, emit=lambda event: None
+    )
+    for name in ("_DSC0001.jxl", "_DSC0002.jxl"):
+        xmp = _xmp_text(tmp_path / "second" / name)
+        assert "photoshop:City>Lisbon<" in xmp
+        assert "scannyboy:iso>800<" in xmp
+        assert _exif_tag(_read_box_tags(tmp_path / "second" / name), 34855) == [800]
+        assert "photoshop:City>Porto<" in _xmp_text(tmp_path / "first" / name)
 
 
 def test_export_without_metadata_writes_no_exif_box_but_still_the_provenance(
