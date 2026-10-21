@@ -635,6 +635,12 @@ private struct PreviewPane: View {
                 )
                 .allowsHitTesting(!cropSession.isActive && !bandSession.isActive)
             }
+            // Above the event host, which would otherwise take the click.
+            .overlay {
+                if zoom.viewportLoadFailed, !cropSession.isActive {
+                    zoomFailurePrompt
+                }
+            }
             .overlay {
                 if bandSession.isActive, negative.output != nil {
                     BandDrawSurface(
@@ -891,6 +897,22 @@ private struct PreviewPane: View {
             .compositingGroup()
             .clipShape(.rect)
             .contentShape(.rect)
+    }
+
+    /// Shown in place of the spinner once a tile has failed every try, so a
+    /// render that cannot succeed no longer looks like one still in flight.
+    private var zoomFailurePrompt: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Couldn’t render this part of the image at 100%.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Try Again") { zoom.retry() }
+        }
+        .padding(16)
+        .background(.regularMaterial, in: .rect(cornerRadius: 10))
     }
 
     /// The current image's display-space size, when it has been stitched.

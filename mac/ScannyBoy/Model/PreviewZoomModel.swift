@@ -56,6 +56,9 @@ final class PreviewZoomModel {
     private(set) var tiles: [TileKey: Tile] = [:]
     /// Live pan translation while dragging at 100%, in points.
     private(set) var panOffset: CGSize = .zero
+    /// Tiles the loader gave up on after `maxAttempts` tries. Observed, so
+    /// the pane can swap its spinner for a Retry prompt.
+    private(set) var failedTiles: Set<TileKey> = []
 
     /// A gesture with less total movement than this, in points, is a click.
     @ObservationIgnored static let clickTolerance: CGFloat = 3
@@ -63,8 +66,15 @@ final class PreviewZoomModel {
     /// Fixed display-space extent of each 1:1 tile, in image pixels.
     @ObservationIgnored static let tileExtent: Int = 1024
 
+    /// Tries a tile gets before the pane reports it as failed.
+    @ObservationIgnored static let maxAttempts = 3
+
+    /// The pause between a failed tile's tries. A var so tests need not wait.
+    @ObservationIgnored var retryDelay: Duration = .milliseconds(500)
+
     @ObservationIgnored private var requestGeneration = 0
     @ObservationIgnored private var inFlightTiles: Set<TileKey> = []
+    @ObservationIgnored private var tileAttempts: [TileKey: Int] = [:]
     @ObservationIgnored private var pendingRequired: Set<TileKey> = []
     @ObservationIgnored private var tileFetchTask: Task<Void, Never>?
     @ObservationIgnored private var drag: Drag?
@@ -355,16 +365,27 @@ final class PreviewZoomModel {
         }
     }
 
-    /// True while any viewport tile is still missing.
-    var viewportIsLoading: Bool {
-        guard mode == .pixels100 else { return false }
-        let keys = Self.requiredTileKeys(
+    private var viewportTileKeys: [TileKey] {
+        Self.requiredTileKeys(
             viewportOrigin: liveViewportOrigin(),
             viewportSize: liveViewportSize,
             displaySize: displaySize,
             includeLeadRing: false
         )
-        return !keys.allSatisfy { tiles[$0] != nil }
+    }
+
+    /// True while a viewport tile is missing and still being tried. A tile
+    /// the loader gave up on is `viewportLoadFailed`, never "loading".
+    var viewportIsLoading: Bool {
+        guard mode == .pixels100 else { return false }
+        let keys = viewportTileKeys
+        return !keys.allSatisfy { tiles[$0] != nil } && !viewportLoadFailed
+    }
+
+    /// True when a viewport tile failed every try and nothing is on its way.
+    var viewportLoadFailed: Bool {
+        guard mode == .pixels100, !failedTiles.isEmpty else { return false }
+        return viewportTileKeys.contains { tiles[$0] == nil && failedTiles.contains($0) }
     }
 
     // MARK: - Input (called by the preview's AppKit event host)
@@ -523,9 +544,19 @@ final class PreviewZoomModel {
             )
         )
         pendingRequired = required
-        let missing = required.filter { tiles[$0] == nil && !inFlightTiles.contains($0) }
+        let missing = required.filter {
+            tiles[$0] == nil && !inFlightTiles.contains($0) && !failedTiles.contains($0)
+        }
         guard !missing.isEmpty else { return }
         ensureTileFetchLoop()
+    }
+
+    /// Forgets the failed tiles and tries them afresh — the pane's Retry.
+    func retry() {
+        guard mode == .pixels100 else { return }
+        failedTiles = []
+        tileAttempts = [:]
+        fetchTilesIfNeeded(for: liveViewportOrigin())
     }
 
     private func ensureTileFetchLoop() {
@@ -539,7 +570,8 @@ final class PreviewZoomModel {
 
     private func runTileFetchLoop(generation: Int) async {
         guard let loader else { return }
-        defer { tileFetchTask = nil }
+        // A superseded loop must not clear the task that replaced it.
+        defer { if requestGeneration == generation { tileFetchTask = nil } }
         while !Task.isCancelled, self.requestGeneration == generation, mode == .pixels100 {
             let viewportSize = liveViewportSize
             let liveOrigin = Self.clampOrigin(
@@ -556,16 +588,33 @@ final class PreviewZoomModel {
                 )
             )
             let missing = pendingRequired
-                .filter { tiles[$0] == nil && !inFlightTiles.contains($0) }
+                .filter {
+                    tiles[$0] == nil && !inFlightTiles.contains($0)
+                        && !failedTiles.contains($0)
+                }
                 .sorted(by: tileFetchPriority(viewportOrigin: liveOrigin, viewportSize: viewportSize))
             guard let key = missing.first else { return }
             inFlightTiles.insert(key)
             let rect = Self.tileRect(for: key, displaySize: displaySize)
             let thumbnail = await loader(rect)
+            guard self.requestGeneration == generation else { return }
             inFlightTiles.remove(key)
-            guard !Task.isCancelled, self.requestGeneration == generation, mode == .pixels100,
-                pendingRequired.contains(key), let thumbnail
-            else { continue }
+            guard !Task.isCancelled, mode == .pixels100, pendingRequired.contains(key) else {
+                continue
+            }
+            guard let thumbnail else {
+                // A failed render is not "still loading": pause, try again a
+                // bounded number of times, then surface it for Retry.
+                let attempts = tileAttempts[key, default: 0] + 1
+                tileAttempts[key] = attempts
+                if attempts >= Self.maxAttempts {
+                    failedTiles.insert(key)
+                } else {
+                    try? await Task.sleep(for: retryDelay)
+                }
+                continue
+            }
+            tileAttempts[key] = nil
             tiles[key] = Tile(
                 image: thumbnail.image, rect: rect, displayScale: displayScale
             )
@@ -612,6 +661,8 @@ final class PreviewZoomModel {
         tileFetchTask = nil
         inFlightTiles = []
         pendingRequired = []
+        tileAttempts = [:]
+        failedTiles = []
         requestGeneration += 1
     }
 

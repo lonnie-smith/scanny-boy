@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import ImageIO
 import Observation
+import os
 
 /// The Edit preview's display mode (protocol version 11's
 /// positive/negative toggle). The positive is the CLI's inverted, tone-
@@ -1148,6 +1149,8 @@ final class EditModel {
 
     // MARK: - Region rendering
 
+    private static let zoomLog = Logger(subsystem: "ScannyBoy", category: "Zoom")
+
     /// Renders one display-space region of `negative`'s published TIFF at
     /// 1:1 — `edit render-region` — in the display encode `mode` names
     /// (protocol version 9's inverted positive; protocol version 11's
@@ -1191,16 +1194,37 @@ final class EditModel {
             mode: mode.rawValue
         )
         var rendered = false
+        var failure: String?
         do {
             for await line in try await runner.session(for: command).start() {
-                if case .event(let event) = line, event.kind == .regionRendered {
+                guard case .event(let event) = line else { continue }
+                if event.kind == .regionRendered {
                     rendered = true
+                } else if event.kind == .error {
+                    failure = "\(event.code.map { String(describing: $0) } ?? "error"): "
+                        + (event.message ?? "no message")
                 }
             }
         } catch {
+            Self.zoomLog.error(
+                "render-region could not start for \(negative.negativeID, privacy: .public): \(String(describing: error), privacy: .public)"
+            )
             return nil
         }
-        guard rendered, let image = Self.loadRegionImage(at: output) else {
+        guard rendered else {
+            // A cancelled request ends without an event of its own; anything
+            // else is a real failure the zoom would otherwise hide.
+            if !Task.isCancelled {
+                Self.zoomLog.error(
+                    "render-region failed for \(negative.negativeID, privacy: .public) at \(Int(rect.minX), privacy: .public),\(Int(rect.minY), privacy: .public) \(Int(rect.width), privacy: .public)x\(Int(rect.height), privacy: .public): \(failure ?? "no region_rendered event", privacy: .public)"
+                )
+            }
+            return nil
+        }
+        guard let image = Self.loadRegionImage(at: output) else {
+            Self.zoomLog.error(
+                "render-region wrote an unreadable region for \(negative.negativeID, privacy: .public) at \(output.lastPathComponent, privacy: .public)"
+            )
             return nil
         }
         #if DEBUG
