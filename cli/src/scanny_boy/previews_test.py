@@ -2023,3 +2023,53 @@ def test_sync_previews_skips_a_negative_deleted_during_the_render(
     previews.sync_previews(roll_dir, manifest)
 
     assert load_roll_manifest(roll_dir).negatives == []
+
+
+def test_display_image_cache_key_separates_stale_and_live_crops():
+    """A crop recorded against another canvas replays as no crop, so it must
+    not share a cached image with a live crop of the same window."""
+    from scanny_boy import previews
+
+    window = {"x": 4, "y": 2, "w": 40, "h": 30, "tilt_deg": 0.0}
+    live = {**window, "canvas": (64, 40)}
+    stale = {**window, "canvas": (69, 40)}
+    path = Path(__file__)
+
+    assert previews._display_pixel_cache_key(
+        path, crop_params=live
+    ) != previews._display_pixel_cache_key(path, crop_params=stale)
+
+
+def test_render_region_with_a_stale_crop_ignores_it_after_a_live_one(tmp_path):
+    """Regression: the live crop's cached full image was served for the stale
+    crop, so tiles past the cropped width came back empty."""
+    from scanny_boy import previews
+
+    image = (np.arange(40 * 64 * 3, dtype=np.uint16).reshape(40, 64, 3) * 137) % 60000
+    tiff_path = _write_published_tiff(tmp_path, image)
+    window = {"x": 4, "y": 2, "w": 40, "h": 30, "tilt_deg": 0.0}
+
+    previews.render_region(
+        tiff_path,
+        0,
+        0,
+        40,
+        30,
+        fine_angle_deg=1.0,
+        crop_params={**window, "canvas": (64, 40)},
+        destination=tmp_path / "live.rgba",
+    )
+    rect = previews.render_region(
+        tiff_path,
+        48,
+        0,
+        16,
+        40,
+        fine_angle_deg=1.0,
+        crop_params={**window, "canvas": (69, 40)},
+        destination=tmp_path / "stale.rgba",
+    )
+
+    assert rect == (48, 0, 16, 40)
+    header = (tmp_path / "stale.rgba").read_bytes()[4:12]
+    assert struct.unpack("<II", header) == (16, 40)

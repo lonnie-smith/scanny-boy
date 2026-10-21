@@ -586,7 +586,8 @@ or fails without partial effects.
 
 `edit render-region` renders one display-space region of a negative's
 published TIFF at 1:1 — the ops log's net transform (rotation, flip, and
-the auto-seeded fine angle) folded in, the 8-bit display encode `--mode`
+the auto-seeded fine angle, plus the live crop and any spot, scratch, or band
+repair) folded in, the 8-bit display encode `--mode`
 names (protocol 11): `"positive"` — the default — is the inverted look the
 cached preview holds, with the tone adjustment composed in; `"negative"`
 is the un-inverted density view, which no tone reaches — no

@@ -120,6 +120,10 @@ def _display_pixel_cache_key(
             int(crop_params["w"]),
             int(crop_params["h"]),
             round(float(crop_params["tilt_deg"]), 4),
+            # A crop recorded against a different canvas is stale and
+            # replays as no crop at all; without the canvas, that and a
+            # live crop with the same window would share one cached image.
+            tuple(crop_params.get("canvas") or ()),
         )
     return (
         str(tiff_path),
