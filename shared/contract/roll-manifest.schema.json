@@ -506,16 +506,15 @@
     },
     "negativeMetadata": {
       "type": "object",
-      "required": ["city", "state", "camera", "lens", "caption"],
+      "required": ["city", "state", "lens", "caption"],
       "properties": {
         "city": { "type": ["string", "null"] },
         "state": { "type": ["string", "null"] },
-        "camera": { "type": ["string", "null"] },
         "lens": { "type": ["string", "null"] },
         "caption": { "type": ["string", "null"] }
       },
       "additionalProperties": false,
-      "description": "The negative's explicit extended-metadata values; null means inherit the roll-level fallback."
+      "description": "The negative's explicit extended-metadata values; null means inherit the roll-level fallback. film, iso and camera are roll-only and absent here."
     },
     "captureTime": {
       "type": "object",

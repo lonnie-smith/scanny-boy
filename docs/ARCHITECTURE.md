@@ -984,6 +984,14 @@ registered.
   automatically, without asking (`_maybe_reapply_metadata`), as the last step
   before the record write. A failed re-apply leaves the negative `completed`
   but dirty — recoverable with Apply — and never fails the stitch.
+- **Extended metadata (live fallback).** `city`, `state`, `lens` and
+  `caption` live on both the roll (the fallback) and each negative (an
+  explicit override); `film`, `iso` and `camera` are roll-only — a roll is
+  shot on one body on one stock, so no negative carries them (migration
+  0021 dropped the per-negative camera). `roll_manifest.effective_metadata`
+  resolves a negative: its own value when non-blank, else the roll's, and
+  always the roll's for the roll-only fields. Nothing is copied between
+  rows, and `export` reads the roll fresh from the database on every run.
 
 ### 9.2 Writing the roll
 

@@ -36,6 +36,10 @@ struct MetadataStageView: View {
                 isSelected: edit.isSelected,
                 warningIDs: []
             ) { negativeID, additive, extendingRange in
+                // A thumbnail click does not take focus from a text field,
+                // so end the edit first: it commits to the frames it began
+                // on, and ⌘A then selects images rather than field text.
+                AppKeyboard.endTextEditing()
                 edit.select(
                     negativeID,
                     additive: additive,
@@ -43,7 +47,24 @@ struct MetadataStageView: View {
                 )
             }
         }
+        // Clicking empty space ends text editing, like clicking the
+        // thumbnails or the preview does. The fields sit in front of this
+        // and keep their own clicks.
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { AppKeyboard.endTextEditing() }
+        }
         .disabled(activity.isBusy)
+        // AppKit can hand the first text field (the roll name) focus as the
+        // tab appears, and a focused field claims ⌘A for its own text. Let
+        // go of it once the tab has settled, so ⌘A selects every image
+        // until the user clicks a field themselves.
+        .onAppear {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { AppKeyboard.endTextEditing() }
+            }
+        }
         // `initial: true` matters: a run usually finishes while this tab is
         // not mounted, so the phase can already be `.finished` when the tab
         // first appears — the roll state it would otherwise show is stale.
@@ -57,43 +78,57 @@ struct MetadataStageView: View {
 
     // MARK: - Roll section
 
+    /// Every roll field is visible at once, in a three-column grid: the
+    /// content is shown whole when it fits, and scrolls only in a window
+    /// too short for it.
     private var rollSection: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if let roll = edit.roll {
-                    rollFields(roll)
-                } else {
-                    ContentUnavailableView(
-                        "Roll Not Loaded",
-                        systemImage: "photo.stack",
-                        description: Text("Select a roll to edit its metadata.")
-                    )
-                }
-                if let renameError {
-                    IssueLabel(
-                        issue: ConfigurationModel.Issue(
-                            code: .rollRenameFailed, message: renameError
-                        ),
-                        style: .error
-                    )
-                }
-                if let metadataError = edit.metadataError {
-                    IssueLabel(issue: metadataError, style: .error)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
+        ViewThatFits(in: .vertical) {
+            rollSectionContent
+            ScrollView { rollSectionContent }
         }
-        .frame(maxHeight: 240)
     }
+
+    private var rollSectionContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let roll = edit.roll {
+                rollFields(roll)
+            } else {
+                ContentUnavailableView(
+                    "Roll Not Loaded",
+                    systemImage: "photo.stack",
+                    description: Text("Select a roll to edit its metadata.")
+                )
+            }
+            if let renameError {
+                IssueLabel(
+                    issue: ConfigurationModel.Issue(
+                        code: .rollRenameFailed, message: renameError
+                    ),
+                    style: .error
+                )
+            }
+            if let metadataError = edit.metadataError {
+                IssueLabel(issue: metadataError, style: .error)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+    }
+
+    private static let rollFieldWidth: CGFloat = 200
+    private static let rollGridSpacing: CGFloat = 24
 
     @ViewBuilder
     private func rollFields(_ roll: RollManifest) -> some View {
         Text("Roll metadata")
             .font(.headline)
 
-        HStack(alignment: .top, spacing: 32) {
-            VStack(alignment: .leading, spacing: 10) {
+        Grid(
+            alignment: .topLeading,
+            horizontalSpacing: Self.rollGridSpacing,
+            verticalSpacing: 10
+        ) {
+            GridRow {
                 rollField("Name") {
                     CommitTextField(
                         title: "Name",
@@ -103,7 +138,7 @@ struct MetadataStageView: View {
                     ) { newName in
                         commitRename(roll, to: newName)
                     }
-                    .frame(maxWidth: 280)
+                    .frame(width: Self.rollFieldWidth)
                 }
                 if let rollURL = edit.rollURL {
                     rollField("Folder") {
@@ -117,7 +152,11 @@ struct MetadataStageView: View {
                                 NSWorkspace.shared.activateFileViewerSelecting([rollURL])
                             }
                         }
+                        .frame(maxWidth: Self.rollFieldWidth, alignment: .leading)
                     }
+                } else {
+                    Color.clear
+                        .gridCellUnsizedAxes([.horizontal, .vertical])
                 }
                 rollField("Capture date") {
                     CommitDatePicker(
@@ -128,29 +167,52 @@ struct MetadataStageView: View {
                     }
                 }
             }
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(EditModel.catalogedFields, id: \.self) { field in
-                    rollField(fieldLabel(field)) {
-                        CommitTextField(
-                            title: fieldLabel(field),
-                            committedValue: roll.metadata[field],
-                            suggestions: edit.catalog[field] ?? [],
-                            editTarget: AnyHashable(roll.rollID)
-                        ) { value in
-                            edit.setRollField(field, to: value)
-                        }
-                        .frame(maxWidth: 280)
-                    }
-                }
+            GridRow {
+                rollTextField(roll, field: "film")
+                rollTextField(roll, field: "iso")
+                rollTextField(roll, field: "camera")
+            }
+            GridRow {
+                rollTextField(roll, field: "lens")
+                rollTextField(roll, field: "city")
+                rollTextField(roll, field: "state")
+            }
+            GridRow {
+                // Prose, never cataloged: no suggestions (the catalog holds
+                // no caption values).
+                rollTextField(roll, field: "caption", width: Self.captionWidth)
+                    .gridCellColumns(3)
             }
         }
 
         Text(
             "Roll-level values apply to every image without its own value. "
-                + "Images keep any value set individually."
+                + "Lens, city, state and caption can be overridden per image; "
+                + "film, ISO and camera apply to the whole roll."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
+    }
+
+    /// The caption field spans the grid's three columns.
+    private static let captionWidth: CGFloat =
+        3 * rollFieldWidth + 2 * rollGridSpacing
+
+    /// One roll-level text field, committing straight to the roll's value.
+    private func rollTextField(
+        _ roll: RollManifest, field: String, width: CGFloat = MetadataStageView.rollFieldWidth
+    ) -> some View {
+        rollField(fieldLabel(field)) {
+            CommitTextField(
+                title: fieldLabel(field),
+                committedValue: roll.metadata[field],
+                suggestions: edit.catalog[field] ?? [],
+                editTarget: AnyHashable(roll.rollID)
+            ) { value in
+                edit.setRollField(field, to: value)
+            }
+            .frame(width: width)
+        }
     }
 
     private func rollField(_ label: String, @ViewBuilder content: () -> some View) -> some View {
@@ -204,6 +266,8 @@ struct MetadataStageView: View {
                 )
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { AppKeyboard.endTextEditing() }
                 Divider()
                 imageMetadataForm
                     .frame(width: 340)
@@ -321,17 +385,26 @@ struct MetadataStageView: View {
         let values = edit.effectiveValues(of: targets, field: field)
         let isMixed = values.count > 1
         let committed: String? = isMixed ? nil : values.first ?? nil
-        return rollField(fieldLabel(field)) {
-            CommitTextField(
-                title: fieldLabel(field),
-                committedValue: committed,
-                suggestions: edit.catalog[field] ?? [],
-                prompt: isMixed ? "<mixed values>" : nil,
-                editTarget: AnyHashable(targets.map(\.negativeID))
-            ) { value in
-                edit.setNegativeField(targets, field: field, to: value)
+        // No image has its own value, so every one shows the roll's.
+        let followsRoll = committed != nil && targets.allSatisfy { $0.metadata[field] == nil }
+        return VStack(alignment: .leading, spacing: 2) {
+            rollField(fieldLabel(field)) {
+                CommitTextField(
+                    title: fieldLabel(field),
+                    committedValue: committed,
+                    suggestions: edit.catalog[field] ?? [],
+                    prompt: isMixed ? "<mixed values>" : nil,
+                    editTarget: AnyHashable(targets.map(\.negativeID))
+                ) { value in
+                    edit.setNegativeField(targets, field: field, to: value)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if followsRoll {
+                Text("From roll")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .disabled(targets.isEmpty)
     }
