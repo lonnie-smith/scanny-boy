@@ -362,12 +362,12 @@ struct PreviewZoomModelTests {
 
     // MARK: - Failed renders
 
-    /// Counts loader calls per tile rect and fails them while `failing`.
+    /// Counts loader calls per tile and fails them while `failing`.
     @MainActor
     private final class FlakyLoader {
         var failing: Bool
         var failuresLeft: Int?
-        private(set) var calls: [CGRect: Int] = [:]
+        private(set) var calls: [PreviewZoomModel.TileKey: Int] = [:]
 
         init(failing: Bool, failuresLeft: Int? = nil) {
             self.failing = failing
@@ -375,7 +375,7 @@ struct PreviewZoomModelTests {
         }
 
         func load(_ rect: CGRect) -> Thumbnail? {
-            calls[rect, default: 0] += 1
+            calls[PreviewZoomModel.TileKey(x: Int(rect.minX), y: Int(rect.minY)), default: 0] += 1
             if let left = failuresLeft {
                 if left > 0 {
                     failuresLeft = left - 1
