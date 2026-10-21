@@ -27,9 +27,13 @@ and what was actually applied is recorded in the XMP's
 `scannyboy:provenance` like every other thing the render did.
 
 The database's metadata — capture time, camera, lens, city, state,
-caption — is built into the Exif and XMP boxes by `export_metadata` at
-encode time; the XMP also carries the `scannyboy:provenance` record (the
-file's interpretability record: the published TIFF's normalization block
+caption, film, ISO — is built into the Exif and XMP boxes by
+`export_metadata` at encode time (the roll is loaded fresh from the
+database at the start of every run, and every negative's metadata is
+resolved from it through `export_metadata_for`: its own defined overrides
+over the roll's values, with camera, film and ISO always the roll's); the
+XMP also carries the `scannyboy:provenance` record (the file's
+interpretability record: the published TIFF's normalization block
 plus what the render actually did). A malformed metadata value now fails
 the negative outright — there is no second write left to downgrade, and
 the file was never written.

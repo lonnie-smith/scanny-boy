@@ -57,7 +57,8 @@ ROLL_KEYS = (
     "caption",
 )
 # The payload's per-negative keys, plus `capture_date` (the negative's
-# `date_override`).
+# `date_override`). `film`, `iso` and `camera` are roll-only, so a negative
+# payload carrying one is rejected as an unknown field.
 NEGATIVE_KEYS = ("capture_date",) + METADATA_FIELDS
 
 

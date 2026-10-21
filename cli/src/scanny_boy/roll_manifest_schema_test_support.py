@@ -58,7 +58,6 @@ def empty_v5_manifest(
             "iso": None,
             "city": None,
             "state": None,
-            "camera": None,
             "lens": None,
             "caption": None,
         },

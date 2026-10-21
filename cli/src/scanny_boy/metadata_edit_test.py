@@ -106,6 +106,34 @@ def test_negative_value_wins_over_roll(two_negative_roll: Path):
     assert effective_b["state"] == "Maine"
 
 
+@pytest.mark.parametrize("field", ["camera", "film", "iso"])
+def test_roll_only_fields_are_rejected_on_a_negative(
+    two_negative_roll: Path, field: str
+):
+    with pytest.raises(MetadataEditFailure) as excinfo:
+        run_metadata_set(
+            two_negative_roll,
+            {
+                "roll": {"city": "Porto"},
+                "negatives": {_NEGATIVE_A: {field: "x"}},
+            },
+        )
+    assert excinfo.value.code == Code.INVALID_METADATA
+    assert field in excinfo.value.message
+    # Nothing was written: the roll-level edit in the same payload did not land.
+    assert load_roll_manifest(two_negative_roll).metadata.city is None
+
+
+def test_the_rolls_camera_is_every_negatives_effective_camera(
+    two_negative_roll: Path,
+):
+    run_metadata_set(two_negative_roll, {"roll": {"camera": "Nikon F3"}})
+    manifest = load_roll_manifest(two_negative_roll)
+    for negative in manifest.negatives:
+        effective = effective_metadata(manifest.metadata, negative.metadata)
+        assert effective["camera"] == "Nikon F3"
+
+
 def test_clearing_a_negative_value_restores_the_fallback(two_negative_roll: Path):
     run_metadata_set(
         two_negative_roll,
@@ -273,8 +301,11 @@ def test_catalog_remembers_canonical_values_not_caption(two_negative_roll: Path)
     run_metadata_set(
         two_negative_roll,
         {
-            "roll": {"city": "Porto", "caption": "once, then never offered"},
-            "negatives": {_NEGATIVE_A: {"camera": "Nikon F3"}},
+            "roll": {
+                "city": "Porto",
+                "camera": "Nikon F3",
+                "caption": "once, then never offered",
+            },
         },
     )
     run_metadata_set(

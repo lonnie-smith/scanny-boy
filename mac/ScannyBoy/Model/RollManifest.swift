@@ -200,18 +200,19 @@ struct RollManifest: Sendable, Hashable {
         let height: Int
     }
 
-    /// Roll-only extended metadata fields (no per-image override).
-    static let rollOnlyMetadataFields = ["film", "iso"]
+    /// Roll-only extended metadata fields (no per-image override): film
+    /// stock, ISO rating and the camera body describe the whole roll.
+    static let rollOnlyMetadataFields = ["film", "iso", "camera"]
 
-    /// The extended metadata fields, in display order. Each lives on both
-    /// the roll (the fallback) and each negative (the explicit value); the
-    /// effective value is the negative's own, else the roll's.
-    static let metadataFields = ["city", "state", "camera", "lens", "caption"]
+    /// The extended metadata fields a negative can override, in display
+    /// order. Each lives on both the roll (the fallback) and each negative
+    /// (the explicit value); the effective value is the negative's own,
+    /// else the roll's.
+    static let metadataFields = ["city", "state", "lens", "caption"]
 
     struct ImageMetadata: Sendable, Hashable {
         var city: String?
         var state: String?
-        var camera: String?
         var lens: String?
         var caption: String?
 
@@ -222,7 +223,6 @@ struct RollManifest: Sendable, Hashable {
                 switch field {
                 case "city": city
                 case "state": state
-                case "camera": camera
                 case "lens": lens
                 case "caption": caption
                 default: nil
@@ -232,7 +232,6 @@ struct RollManifest: Sendable, Hashable {
                 switch field {
                 case "city": city = newValue
                 case "state": state = newValue
-                case "camera": camera = newValue
                 case "lens": lens = newValue
                 case "caption": caption = newValue
                 default: break
@@ -395,6 +394,8 @@ struct RollManifest: Sendable, Hashable {
         // without its own explicit value displays and exports.
         var city: String?
         var state: String?
+        // Roll-only, like film and ISO: the camera body has no per-image
+        // override, so this is also the effective value for every negative.
         var camera: String?
         var lens: String?
         var caption: String?
@@ -592,7 +593,6 @@ struct RollManifest: Sendable, Hashable {
         ImageMetadata(
             city: fields["city"]?.stringValue,
             state: fields["state"]?.stringValue,
-            camera: fields["camera"]?.stringValue,
             lens: fields["lens"]?.stringValue,
             caption: fields["caption"]?.stringValue
         )
