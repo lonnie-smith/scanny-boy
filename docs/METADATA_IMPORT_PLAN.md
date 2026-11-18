@@ -132,6 +132,7 @@ The existing semantics hold: an absent key means unchanged, and `null` or `""` c
 - `logged_offset` requires `logged_time`.
 - Setting a negative's `capture_date` (its date override) also clears its `logged_time` and `logged_offset`, unless the same payload sets them too. That keeps a manual date edit authoritative.
 - Setting `logged_time` also clears the negative's `capture_date` override, unless the same payload sets it.
+- A payload that carries `logged_time` (set or cleared) without `logged_offset` clears the stored offset. An offset belongs to the time it was logged with.
 
 None of the new keys feed the metadata-values catalog. After writing, `apply_intended_times` runs, as it does today.
 

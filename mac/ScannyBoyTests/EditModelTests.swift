@@ -808,6 +808,43 @@ struct EditModelTests {
         #expect(adjustment.castRemoval == 0.3)
     }
 
+    @Test("Frame log fields decode when present and default to nil when absent")
+    func testFrameLogFieldsDecodeAndDefault() throws {
+        let manifestJSON = """
+        {"roll_id":"roll-1","roll_name":"Roll","created_at":"2026-01-01T00:00:00Z",\
+        "updated_at":"2026-01-01T00:00:00Z","runs":[],\
+        "metadata":{"framelog_roll_uid":"abcde12345","framelog_roll_number":42},\
+        "negatives":[\
+        {"negative_id":"linked","run_id":"r","members":["a.NEF"],\
+        "expected_output":"linked.tif","status":"completed",\
+        "capture_time":{"logged_datetime_original":"2026-08-02T10:30:00","logged_offset":"-05:00"},\
+        "framelog_frame_uid":"fghij67890",\
+        "place":{"latitude":41.5,"longitude":-87,"gps_accuracy_m":12.5,\
+        "location_name":"Park","address":"1 Main St"}},\
+        {"negative_id":"old","run_id":"r","members":["b.NEF"],\
+        "expected_output":"old.tif","status":"completed","capture_time":{}}]}
+        """
+        let fields = try #require(
+            try JSONDecoder().decode(JSONValue.self, from: Data(manifestJSON.utf8)).objectValue
+        )
+        let manifest = try #require(RollManifest(fields: fields))
+        #expect(manifest.metadata.framelogRollUID == "abcde12345")
+        #expect(manifest.metadata.framelogRollNumber == 42)
+        let linked = manifest.negatives[0]
+        #expect(linked.framelogFrameUID == "fghij67890")
+        #expect(linked.captureTime.loggedDatetimeOriginal == "2026-08-02T10:30:00")
+        #expect(linked.captureTime.loggedOffset == "-05:00")
+        #expect(linked.place.latitude == 41.5)
+        #expect(linked.place.longitude == -87)
+        #expect(linked.place.gpsAccuracyM == 12.5)
+        #expect(linked.place.locationName == "Park")
+        #expect(linked.place.address == "1 Main St")
+        let old = manifest.negatives[1]
+        #expect(old.framelogFrameUID == nil)
+        #expect(old.captureTime.loggedDatetimeOriginal == nil)
+        #expect(old.place == .empty)
+    }
+
     @Test("The negative view's cache generation carries the transform but not the tone")
     func testNegativeViewGenerationIgnoresTone() {
         let flat = Self.multiNegative(id: "n1", toneSnapGamma: nil)

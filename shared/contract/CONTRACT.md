@@ -553,6 +553,25 @@ malformed payload, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown negative id — the whole payload is
 validated before anything is written.
 
+The Frame log import adds keys (docs/METADATA_IMPORT_PLAN.md section 4).
+Roll: `framelog_roll_uid` (10 characters of `[0-9a-z]`) and
+`framelog_roll_number` (an integer >= 1; a boolean is rejected). Negative:
+`framelog_frame_uid` (same shape as the roll uid), `latitude` (-90..90),
+`longitude` (-180..180), `gps_accuracy_m` (>= 0), `location_name` and
+`address` (at most 500 characters), `logged_time` (`YYYY-MM-DDTHH:MM:SS`,
+stored as `capture_time.logged_datetime_original`) and `logged_offset`
+(`+HH:MM` or `-HH:MM`, stored as `capture_time.logged_offset`). They follow
+the same absent/`null`/`""` rules and none feeds the metadata-values
+catalog. Cross-field rules are checked on the merged result and fail the
+whole payload with `INVALID_METADATA`: `latitude` and `longitude` are both
+set or both null, and `logged_offset` requires `logged_time`. Setting a
+negative's `capture_date` also clears its `logged_time` and `logged_offset`,
+and setting `logged_time` also clears its `capture_date`, unless the same
+payload sets the other side. A payload carrying `logged_time` without
+`logged_offset` clears the stored offset. A negative with a logged time uses it as its
+intended capture time, takes no rank on its date, and gets one even when the
+roll has no capture date.
+
 `metadata values` lists the catalog of previously-entered values for one
 field (`film`, `iso`, `city`, `state`, `camera`, or `lens`), most-recently-used first, as
 a `metadata_values` event. It fails with `INVALID_METADATA` for any other

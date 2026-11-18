@@ -25,6 +25,10 @@ from scanny_boy.roll_manifest import (
     load_roll_manifest,
 )
 from scanny_boy.roll_manifest_test import _negative, _run
+from scanny_boy.roll_manifest_schema_test_support import (
+    assert_matches_roll_manifest_schema,
+    load_roll_manifest_schema,
+)
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
 from scanny_boy.work_dir_support import make_roll_dir
 
@@ -516,3 +520,260 @@ def test_cli_set_bad_payload_fails_with_invalid_metadata(two_negative_roll: Path
     events = [json.loads(line) for line in stdout.getvalue().splitlines()]
     error = next(event for event in events if event["event"] == "error")
     assert error["code"] == "INVALID_METADATA"
+
+
+# --- Frame log keys (docs/METADATA_IMPORT_PLAN.md section 4.4) -----------------
+
+_FRAME_UID = "abcde12345"
+
+
+def test_frame_log_keys_round_trip_into_the_manifest(two_negative_roll: Path):
+    result = run_metadata_set(
+        two_negative_roll,
+        {
+            "roll": {"framelog_roll_uid": "zyxwv98765", "framelog_roll_number": 42},
+            "negatives": {
+                _NEGATIVE_A: {
+                    "framelog_frame_uid": _FRAME_UID,
+                    "latitude": 41.15,
+                    "longitude": -8.61,
+                    "gps_accuracy_m": 5,
+                    "location_name": "  Park ",
+                    "address": "1 Main St",
+                    "logged_time": "2026-08-01T10:30:00",
+                    "logged_offset": "+01:00",
+                }
+            },
+        },
+    )
+
+    manifest = load_roll_manifest(two_negative_roll)
+    assert manifest.metadata.framelog_roll_uid == "zyxwv98765"
+    assert manifest.metadata.framelog_roll_number == 42
+    negative = manifest.negative(_NEGATIVE_A)
+    assert negative.framelog_frame_uid == _FRAME_UID
+    assert (negative.place.latitude, negative.place.longitude) == (41.15, -8.61)
+    assert negative.place.gps_accuracy_m == 5.0
+    assert negative.place.location_name == "Park"
+    assert negative.place.address == "1 Main St"
+    assert negative.capture_time.logged_datetime_original == "2026-08-01T10:30:00"
+    assert negative.capture_time.logged_offset == "+01:00"
+    # The logged time is the intended time, and takes no rank: B is still
+    # rank 1 on the roll date.
+    assert negative.capture_time.intended_datetime_original == "2026-08-01T10:30:00"
+    assert (
+        manifest.negative(_NEGATIVE_B).capture_time.intended_datetime_original
+        == "2026-08-01T12:00:00"
+    )
+    assert result["metadata"]["framelog_roll_uid"] == "zyxwv98765"
+    assert result["negatives"][0]["place"]["address"] == "1 Main St"
+    assert_matches_roll_manifest_schema(result, load_roll_manifest_schema())
+
+
+def test_frame_log_keys_clear_with_null_or_empty(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {
+            "roll": {"framelog_roll_uid": "zyxwv98765", "framelog_roll_number": 3},
+            "negatives": {
+                _NEGATIVE_A: {
+                    "framelog_frame_uid": _FRAME_UID,
+                    "latitude": 1,
+                    "longitude": 2,
+                    "address": "x",
+                }
+            },
+        },
+    )
+    run_metadata_set(
+        two_negative_roll,
+        {
+            "roll": {"framelog_roll_uid": None, "framelog_roll_number": ""},
+            "negatives": {
+                _NEGATIVE_A: {
+                    "framelog_frame_uid": "",
+                    "latitude": None,
+                    "longitude": None,
+                    "address": None,
+                }
+            },
+        },
+    )
+    manifest = load_roll_manifest(two_negative_roll)
+    assert manifest.metadata.framelog_roll_uid is None
+    assert manifest.metadata.framelog_roll_number is None
+    negative = manifest.negative(_NEGATIVE_A)
+    assert negative.framelog_frame_uid is None
+    assert negative.place.to_dict() == dict.fromkeys(negative.place.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("roll", "negative"),
+    [
+        ({"framelog_roll_uid": "ABCDE12345"}, None),  # uppercase
+        ({"framelog_roll_uid": "short"}, None),
+        ({"framelog_roll_number": True}, None),  # bool is not a roll number
+        ({"framelog_roll_number": 0}, None),
+        ({"framelog_roll_number": 1.5}, None),
+        ({"framelog_roll_number": "7"}, None),
+        (None, {"framelog_frame_uid": "bad uid!!!"}),
+        (None, {"latitude": 90.5, "longitude": 0}),
+        (None, {"latitude": -90.5, "longitude": 0}),
+        (None, {"latitude": 0, "longitude": 180.5}),
+        (None, {"latitude": True, "longitude": 0}),
+        (None, {"latitude": "12", "longitude": 0}),
+        (None, {"latitude": 12}),  # lat without lon
+        (None, {"longitude": 12}),  # lon without lat
+        (None, {"gps_accuracy_m": -1}),
+        (None, {"location_name": "x" * 501}),
+        (None, {"address": 5}),
+        (None, {"logged_time": "2026-08-01 10:30:00"}),
+        (None, {"logged_time": "2026-13-01T10:30:00"}),
+        (None, {"logged_time": "2026-08-01"}),
+        (None, {"logged_time": 20260801}),
+        (None, {"logged_time": "2026-08-01T10:30:00", "logged_offset": "0100"}),
+        (None, {"logged_offset": "+01:00"}),  # offset without time
+    ],
+)
+def test_invalid_frame_log_values_fail_without_writing(
+    two_negative_roll: Path, roll, negative
+):
+    payload: dict = {"roll": {"city": "Porto", **(roll or {})}}
+    if negative is not None:
+        payload["negatives"] = {_NEGATIVE_A: negative}
+    with pytest.raises(MetadataEditFailure) as excinfo:
+        run_metadata_set(two_negative_roll, payload)
+    assert excinfo.value.code == Code.INVALID_METADATA
+    # All or nothing: the valid city in the same payload did not land.
+    assert load_roll_manifest(two_negative_roll).metadata.city is None
+
+
+def test_lat_lon_rule_is_checked_on_the_merged_result(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {"negatives": {_NEGATIVE_A: {"latitude": 10, "longitude": 20}}},
+    )
+    # Changing only one is fine while the other stays set...
+    run_metadata_set(two_negative_roll, {"negatives": {_NEGATIVE_A: {"latitude": 11}}})
+    # ...but clearing only one is not.
+    with pytest.raises(MetadataEditFailure) as excinfo:
+        run_metadata_set(
+            two_negative_roll, {"negatives": {_NEGATIVE_A: {"longitude": None}}}
+        )
+    assert excinfo.value.code == Code.INVALID_METADATA
+    place = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).place
+    assert (place.latitude, place.longitude) == (11, 20)
+
+
+def test_logged_time_without_offset_drops_the_stored_offset(
+    two_negative_roll: Path,
+):
+    def logged(fields: dict) -> tuple:
+        run_metadata_set(two_negative_roll, {"negatives": {_NEGATIVE_A: fields}})
+        ct = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).capture_time
+        return ct.logged_datetime_original, ct.logged_offset
+
+    assert logged(
+        {"logged_time": "2026-08-01T10:30:00", "logged_offset": "+01:00"}
+    ) == ("2026-08-01T10:30:00", "+01:00")
+    # A re-import whose frame has no offset must not keep the old one.
+    assert logged({"logged_time": "2026-08-01T11:00:00"}) == (
+        "2026-08-01T11:00:00",
+        None,
+    )
+    logged({"logged_time": "2026-08-01T11:00:00", "logged_offset": "-05:00"})
+    # Clearing the time alone clears its offset too.
+    assert logged({"logged_time": None}) == (None, None)
+
+
+def test_setting_capture_date_clears_the_logged_time(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {
+            "negatives": {
+                _NEGATIVE_A: {
+                    "logged_time": "2026-08-01T10:30:00",
+                    "logged_offset": "+01:00",
+                }
+            }
+        },
+    )
+    run_metadata_set(
+        two_negative_roll, {"negatives": {_NEGATIVE_A: {"capture_date": "2026-08-09"}}}
+    )
+    capture_time = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).capture_time
+    assert capture_time.date_override == "2026-08-09"
+    assert capture_time.logged_datetime_original is None
+    assert capture_time.logged_offset is None
+    assert capture_time.intended_datetime_original == "2026-08-09T12:00:00"
+
+
+def test_setting_logged_time_clears_the_capture_date(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll, {"negatives": {_NEGATIVE_A: {"capture_date": "2026-08-09"}}}
+    )
+    run_metadata_set(
+        two_negative_roll,
+        {"negatives": {_NEGATIVE_A: {"logged_time": "2026-08-01T10:30:00"}}},
+    )
+    capture_time = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).capture_time
+    assert capture_time.date_override is None
+    assert capture_time.logged_datetime_original == "2026-08-01T10:30:00"
+
+
+def test_one_payload_may_set_both_capture_date_and_logged_time(
+    two_negative_roll: Path,
+):
+    run_metadata_set(
+        two_negative_roll,
+        {
+            "negatives": {
+                _NEGATIVE_A: {
+                    "capture_date": "2026-08-09",
+                    "logged_time": "2026-08-01T10:30:00",
+                }
+            }
+        },
+    )
+    capture_time = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).capture_time
+    assert capture_time.date_override == "2026-08-09"
+    assert capture_time.logged_datetime_original == "2026-08-01T10:30:00"
+
+
+def test_clearing_capture_date_keeps_the_logged_time(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {
+            "negatives": {
+                _NEGATIVE_A: {
+                    "capture_date": "2026-08-09",
+                    "logged_time": "2026-08-01T10:30:00",
+                }
+            }
+        },
+    )
+    run_metadata_set(
+        two_negative_roll, {"negatives": {_NEGATIVE_A: {"capture_date": None}}}
+    )
+    capture_time = load_roll_manifest(two_negative_roll).negative(_NEGATIVE_A).capture_time
+    assert capture_time.logged_datetime_original == "2026-08-01T10:30:00"
+
+
+def test_frame_log_keys_do_not_feed_the_catalog(two_negative_roll: Path):
+    run_metadata_set(
+        two_negative_roll,
+        {"negatives": {_NEGATIVE_A: {"location_name": "Park", "address": "1 Main"}}},
+    )
+    for field in ("film", "iso", "city", "state", "camera", "lens"):
+        assert "Park" not in run_metadata_values(field)[0]
+
+
+def test_roll_keys_are_not_valid_on_a_negative(two_negative_roll: Path):
+    with pytest.raises(MetadataEditFailure) as excinfo:
+        run_metadata_set(
+            two_negative_roll,
+            {"negatives": {_NEGATIVE_A: {"framelog_roll_uid": _FRAME_UID}}},
+        )
+    assert excinfo.value.code == Code.INVALID_METADATA
+    with pytest.raises(MetadataEditFailure):
+        run_metadata_set(two_negative_roll, {"roll": {"latitude": 1}})

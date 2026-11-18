@@ -158,9 +158,18 @@ class CaptureTime:
     intended_datetime_original: str | None = None
     applied_datetime_original: str | None = None
     date_override: str | None = None
+    # Frame log's logged local wall time (`YYYY-MM-DDTHH:MM:SS`) and UTC
+    # offset (`±HH:MM`). Older rows lack both keys and read back as None.
+    logged_datetime_original: str | None = None
+    logged_offset: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaptureTime:
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
 
 
 @dataclasses.dataclass
@@ -220,6 +229,28 @@ class NegativeMetadata:
 
 
 @dataclasses.dataclass
+class NegativePlace:
+    """Where a negative was shot, as imported from the Frame log. Belongs to
+    the negative only: it has no roll-level fallback, so it is not part of
+    `NegativeMetadata`."""
+
+    latitude: float | None = None
+    longitude: float | None = None
+    gps_accuracy_m: float | None = None
+    location_name: str | None = None
+    address: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> NegativePlace:
+        data = data or {}
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
+
+
+@dataclasses.dataclass
 class NegativeRecord:
     negative_id: str
     run_id: str
@@ -234,6 +265,9 @@ class NegativeRecord:
     # The negative's explicit extended-metadata values (None = inherit the
     # roll's fallback).
     metadata: NegativeMetadata = dataclasses.field(default_factory=NegativeMetadata)
+    # The linked Frame log frame's uid, and the frame's place.
+    framelog_frame_uid: str | None = None
+    place: NegativePlace = dataclasses.field(default_factory=NegativePlace)
     # `{name, size, sha256, width, height}`; a plain dict rather than a
     # dataclass because Phase 1's `OutputRecord` has no dimensions and this
     # module's dataclass list is fixed by the plan.
@@ -315,6 +349,8 @@ class NegativeRecord:
             "error_message": self.error_message,
             "capture_time": self.capture_time.to_dict(),
             "metadata": self.metadata.to_dict(),
+            "framelog_frame_uid": self.framelog_frame_uid,
+            "place": self.place.to_dict(),
             "preview_path": self.preview_path,
             "grid": self.grid,
             "grid_cells": self.grid_cells,
@@ -340,6 +376,9 @@ class RollMetadata:
     camera: str | None = None
     lens: str | None = None
     caption: str | None = None
+    # The linked Frame log roll (docs/METADATA_IMPORT_PLAN.md section 4.2).
+    framelog_roll_uid: str | None = None
+    framelog_roll_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

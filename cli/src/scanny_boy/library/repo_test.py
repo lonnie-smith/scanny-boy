@@ -119,6 +119,7 @@ def test_migration_0020_keeps_a_typed_stock_and_fills_its_kind():
         # Migration 0021 ran on the way here; the column it dropped is
         # back for the rewound database, so the replayed 0021 can drop it.
         connection.execute("ALTER TABLE negatives ADD COLUMN camera TEXT")
+        _drop_0022_columns(connection)
         connection.execute("DELETE FROM metadata_values")
         connection.execute("ALTER TABLE metadata_values DROP COLUMN film_kind")
         connection.execute(
@@ -136,6 +137,26 @@ def test_migration_0020_keeps_a_typed_stock_and_fills_its_kind():
     assert repo.list_metadata_value_kinds("film")["Kodak Portra 400"] == "colour"
 
 
+_0022_ROLL_COLUMNS = ("framelog_roll_uid", "framelog_roll_number")
+_0022_NEGATIVE_COLUMNS = (
+    "framelog_frame_uid",
+    "latitude",
+    "longitude",
+    "gps_accuracy_m",
+    "location_name",
+    "address",
+)
+
+
+def _drop_0022_columns(connection) -> None:
+    """Takes the columns migration 0022 added back off a rewound database,
+    so the replayed 0022 can add them."""
+    for column in _0022_ROLL_COLUMNS:
+        connection.execute(f"ALTER TABLE rolls DROP COLUMN {column}")
+    for column in _0022_NEGATIVE_COLUMNS:
+        connection.execute(f"ALTER TABLE negatives DROP COLUMN {column}")
+
+
 # --- roll-only camera (migration 0021) ----------------------------------------
 
 
@@ -146,6 +167,7 @@ def _rewind_to_0020(path: Path) -> None:
 
     with sqlite3.connect(path) as connection:
         connection.execute("ALTER TABLE negatives ADD COLUMN camera TEXT")
+        _drop_0022_columns(connection)
         connection.execute("UPDATE alembic_version SET version_num = '0020'")
 
 
@@ -238,6 +260,104 @@ def test_migration_0021_downgrade_restores_a_nullable_column(tmp_path):
         }
     assert "camera" in columns
     assert columns["camera"][3] == 0  # the notnull flag: the column is nullable
+
+
+# --- Frame log import (migration 0022) ----------------------------------------
+
+
+def test_migration_0022_adds_the_columns_and_keeps_existing_rows(tmp_path):
+    import json
+    import sqlite3
+
+    from scanny_boy.roll_manifest import load_roll_manifest
+    from scanny_boy.roll_manifest_test import _negative
+
+    directory = tmp_path / "old"
+    directory.mkdir()
+    manifest = new_roll_manifest(roll_id="old", roll_name="old")
+    manifest.metadata.city = "Porto"
+    manifest.negatives.append(_negative(negative_id="old-negative-1"))
+    manifest.negatives[0].metadata.caption = "kept"
+    write_roll_manifest(directory, manifest)
+    path = db.library_db_path()
+    db.reset_engine_cache()
+    with sqlite3.connect(path) as connection:
+        _drop_0022_columns(connection)
+        connection.execute("UPDATE alembic_version SET version_num = '0021'")
+        # A pre-0022 capture_time JSON lacks the logged keys.
+        connection.execute(
+            "UPDATE negatives SET capture_time = ?",
+            (json.dumps({"source_datetime_original": "2026-08-01T10:00:00"}),),
+        )
+
+    engine = db.open_engine()
+
+    inspector = inspect(engine)
+    rolls = {column["name"] for column in inspector.get_columns("rolls")}
+    negatives = {column["name"] for column in inspector.get_columns("negatives")}
+    assert set(_0022_ROLL_COLUMNS) <= rolls
+    assert set(_0022_NEGATIVE_COLUMNS) <= negatives
+    loaded = load_roll_manifest(directory)
+    assert loaded.metadata.city == "Porto"
+    assert loaded.metadata.framelog_roll_uid is None
+    assert loaded.metadata.framelog_roll_number is None
+    negative = loaded.negatives[0]
+    assert negative.metadata.caption == "kept"
+    assert negative.framelog_frame_uid is None
+    assert negative.place.latitude is None
+    assert negative.place.address is None
+    assert negative.capture_time.source_datetime_original == "2026-08-01T10:00:00"
+    assert negative.capture_time.logged_datetime_original is None
+    assert negative.capture_time.logged_offset is None
+
+
+def test_frame_log_fields_round_trip_through_the_database(roll_dir):
+    from scanny_boy.roll_manifest import load_roll_manifest
+    from scanny_boy.roll_manifest_test import _negative
+
+    manifest = load_roll_manifest(roll_dir)
+    manifest.metadata.framelog_roll_uid = "abcde12345"
+    manifest.metadata.framelog_roll_number = 42
+    negative = _negative(negative_id="rid-1-negative-01")
+    negative.framelog_frame_uid = "fghij67890"
+    negative.place.latitude = 41.15
+    negative.place.longitude = -8.61
+    negative.place.gps_accuracy_m = 5.5
+    negative.place.location_name = "Park"
+    negative.place.address = "1 Main St"
+    negative.capture_time.logged_datetime_original = "2026-08-01T10:30:00"
+    negative.capture_time.logged_offset = "+01:00"
+    manifest.negatives.append(negative)
+    write_roll_manifest(roll_dir, manifest)
+
+    loaded = load_roll_manifest(roll_dir)
+
+    assert loaded.metadata.framelog_roll_uid == "abcde12345"
+    assert loaded.metadata.framelog_roll_number == 42
+    assert loaded.negatives[0].to_dict() == negative.to_dict()
+
+
+def test_migration_0022_downgrade_drops_the_columns():
+    import sqlite3
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = import_module(
+        "scanny_boy.library.migrations.versions.0022_framelog_import"
+    )
+    engine = db.open_engine()
+    with (
+        engine.begin() as connection,
+        Operations.context(MigrationContext.configure(connection)),
+    ):
+        migration.downgrade()
+    with sqlite3.connect(db.library_db_path()) as connection:
+        negatives = {row[1] for row in connection.execute("PRAGMA table_info(negatives)")}
+        rolls = {row[1] for row in connection.execute("PRAGMA table_info(rolls)")}
+    assert not negatives & set(_0022_NEGATIVE_COLUMNS)
+    assert not rolls & set(_0022_ROLL_COLUMNS)
 
 
 # --- rows written before gain normalization -------------------------------
