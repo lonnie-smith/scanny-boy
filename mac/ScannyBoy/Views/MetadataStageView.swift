@@ -20,6 +20,8 @@ struct MetadataStageView: View {
     @Bindable var edit: EditModel
     let run: RunModel
     let activity: AppActivity
+    /// Enables the Frame log import button (an open roll and a saved token).
+    let keyboard: AppKeyboardState
 
     @State private var renameError: String?
 
@@ -185,6 +187,8 @@ struct MetadataStageView: View {
             }
         }
 
+        frameLogImportRow(roll)
+
         Text(
             "Roll-level values apply to every image without its own value. "
                 + "Lens, city, state and caption can be overridden per image; "
@@ -192,6 +196,30 @@ struct MetadataStageView: View {
         )
         .font(.caption)
         .foregroundStyle(.secondary)
+    }
+
+    /// The Frame log import entry point, with the linked roll when there is
+    /// one. Opens `FrameLogImportSheet` through the same notification as the
+    /// File menu item.
+    private func frameLogImportRow(_ roll: RollManifest) -> some View {
+        HStack(spacing: 10) {
+            Button("Import from Frame log…") {
+                NotificationCenter.default.post(
+                    name: .scannyBoyRequestFrameLogImport, object: nil
+                )
+            }
+            .disabled(!keyboard.canImportFromFrameLog)
+            .help(
+                keyboard.hasFrameLogToken
+                    ? "Fill this roll’s metadata from a Frame log roll."
+                    : "Save a Frame log token in Settings to enable the import."
+            )
+            if let number = roll.metadata.framelogRollNumber {
+                Text("Linked to Frame log roll #\(number)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// The caption field spans the grid's three columns.
@@ -315,6 +343,7 @@ struct MetadataStageView: View {
                 ForEach(RollManifest.metadataFields, id: \.self) { field in
                     negativeMetadataField(field)
                 }
+                placeSection
                 if edit.isSettingMetadata {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
@@ -350,7 +379,66 @@ struct MetadataStageView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let logged = loggedTimeCaption {
+                Text(logged)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    /// The Frame log's logged local time and UTC offset for a single
+    /// selected image. Read-only: it comes from the import.
+    private var loggedTimeCaption: String? {
+        guard targets.count == 1, let target = targets.first,
+            let logged = target.captureTime.loggedDatetimeOriginal
+        else { return nil }
+        let text = logged.replacingOccurrences(of: "T", with: " ")
+        if let offset = target.captureTime.loggedOffset {
+            return "Logged \(text) (UTC\(offset))"
+        }
+        return "Logged \(text)"
+    }
+
+    // MARK: - Place (read-only, from the Frame log)
+
+    @ViewBuilder
+    private var placeSection: some View {
+        if targets.count == 1, let place = targets.first?.place, Self.hasPlace(place) {
+            VStack(alignment: .leading, spacing: 4) {
+                Divider()
+                Text("Place")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let name = place.locationName {
+                    Text(name)
+                }
+                if let address = place.address {
+                    Text(address)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let latitude = place.latitude, let longitude = place.longitude {
+                    Button {
+                        Self.openInMaps(latitude: latitude, longitude: longitude)
+                    } label: {
+                        Label("GPS", systemImage: "location")
+                    }
+                    .help("Open this position in Maps")
+                }
+            }
+        }
+    }
+
+    private static func hasPlace(_ place: RollManifest.Negative.Place) -> Bool {
+        place.locationName != nil || place.address != nil
+            || (place.latitude != nil && place.longitude != nil)
+    }
+
+    private static func openInMaps(latitude: Double, longitude: Double) {
+        let coordinates = String(format: "%.6f,%.6f", latitude, longitude)
+        guard let url = URL(string: "http://maps.apple.com/?ll=\(coordinates)") else { return }
+        _ = NSWorkspace.shared.open(url)
     }
 
     /// The selection's date override when all selected images share one

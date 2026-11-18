@@ -190,6 +190,13 @@ struct FileMenuCommands: Commands {
                     name: .scannyBoyRequestGridProfiles, object: nil
                 )
             }
+            Divider()
+            Button("Import from Frame log…") {
+                NotificationCenter.default.post(
+                    name: .scannyBoyRequestFrameLogImport, object: nil
+                )
+            }
+            .disabled(!keyboard.canImportFromFrameLog)
         }
     }
 }
@@ -215,6 +222,12 @@ extension Notification.Name {
     )
     static let scannyBoyRequestGridProfiles = Notification.Name(
         "com.lonniesmith.scanny-boy.requestGridProfiles"
+    )
+    /// File > Import from Frame log… and the Metadata stage's button: open
+    /// `FrameLogImportSheet` on the selected roll. `ContentView` answers it
+    /// through `FrameLogImportPresentation`.
+    static let scannyBoyRequestFrameLogImport = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestFrameLogImport"
     )
 }
 

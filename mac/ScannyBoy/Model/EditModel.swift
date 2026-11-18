@@ -1601,6 +1601,21 @@ final class EditModel {
         return task
     }
 
+    /// Takes the manifest a `framelog apply` returned, the way a `metadata
+    /// set` confirmation lands: straight into memory, no `roll info` round
+    /// trip. A manifest for a roll that is no longer on screen is dropped
+    /// (the import itself is durable). A changed film stock follows the same
+    /// rule as a film edit on the Metadata stage.
+    func adoptImportedManifest(_ manifest: RollManifest, for importedRoll: URL) async {
+        guard rollURL == importedRoll else { return }
+        let filmChanged = roll?.metadata.film != manifest.metadata.film
+        roll = manifest
+        metadataError = nil
+        if filmChanged {
+            await onRollFilmChanged?(manifest.metadata.film)
+        }
+    }
+
     private enum MetadataSetResult: Sendable {
         case success(RollManifest)
         case failure(ConfigurationModel.Issue)

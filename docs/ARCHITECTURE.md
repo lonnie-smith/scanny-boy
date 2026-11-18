@@ -1207,7 +1207,9 @@ RootView                    resolves the CLI helper once; shows why not if it ca
       ├─ MetadataStageView  roll + negative metadata (via `metadata set`), Apply
       └─ ExportStageView    choose an output folder → one `export` invocation
 
-sheets: NewRollSheet, RestitchSheet, FlatFieldProfilesSheet, GridProfilesSheet, SettingsView
+sheets: NewRollSheet, RestitchSheet, FlatFieldProfilesSheet, GridProfilesSheet,
+        FrameLogImportSheet (File > Import from Frame log… or the Metadata stage's
+        button; presented by the `FrameLogImportPresentation` modifier), SettingsView
 ```
 
 One active run **app-wide** disables the sidebar, the tab picker, and every
@@ -1228,6 +1230,8 @@ any in-flight export — one helper invocation at a time.
 | `PreviewCache`, `PreviewZoomModel` | Preview file layout under Application Support, and the 1:1 region fetch through `edit render-region`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
 | `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
+| `FrameLogConnectionModel` | The Settings pane's Frame log section: base URL, token (Keychain; shown by prefix only) and a test connection through `framelog rolls`. The token reaches the CLI in `SCANNY_BOY_FRAMELOG_TOKEN`, never argv. |
+| `FrameLogImportModel` / `FrameLogAlignment` | The import sheet's state: `framelog rolls` → `framelog roll` → editable alignment → `framelog apply`, all one-shot. `FrameLogAlignment` is the pure pairing of negatives with frame numbers (strictly increasing, within `1...lastFrame`). The `metadata_updated` manifest from apply goes to `EditModel.adoptImportedManifest`, which lands it in memory like a `metadata set` result. See `docs/METADATA_IMPORT_PLAN.md` §6. |
 | `AppActivity` | The app-wide "one helper invocation at a time" busy flag every stage observes. |
 | `ThumbnailLoader` | Catalogue thumbnails (QuickLook / embedded JPEG); see below. |
 
