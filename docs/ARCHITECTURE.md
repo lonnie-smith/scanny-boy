@@ -155,6 +155,10 @@ roll delete --roll DIR
 roll set-base-frame --roll DIR --frame FILE [--flatfield ID]
 roll set-film-kind  --roll DIR --film-kind colour|monochrome
 
+framelog rolls [--status all|active|finished] [--base-url URL]
+framelog roll  --roll DIR --ref UID|NUMBER [--base-url URL]
+framelog apply --roll DIR --ref UID --assignments JSON [--base-url URL]
+
 probe   --input DIR [--files ...] [--per-negative N | --grid AxD] [--out DIR] [--roll DIR] [--flatfield ID]
 prepare --input DIR --files ... --out DIR [--per-negative N | --grid AxD] [--jobs N] [--overwrite] [--flatfield ID]
 stitch  --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
@@ -970,7 +974,9 @@ registered.
   one to read it from. `roll_sequence.py` is the only computation of it.
 - The applied timestamp is **rank-based**: `12:00:00 + (rank − 1)` seconds on
   the roll's capture date, or a negative's own date override, ranked within
-  that date's negatives.
+  that date's negatives. A negative with a **logged time** (imported from the
+  Frame log, `capture_time.logged_datetime_original`) uses that instead and
+  takes no rank.
 - **Intent lives in the record; the TIFF is the artefact.** A negative is
   *dirty* when `intended_datetime_original ≠ applied_datetime_original`.
   `apply-metadata` handles every dirty, completed, published negative:
@@ -992,6 +998,16 @@ registered.
   resolves a negative: its own value when non-blank, else the roll's, and
   always the roll's for the roll-only fields. Nothing is copied between
   rows, and `export` reads the roll fresh from the database on every run.
+- **Frame log import** (`docs/METADATA_IMPORT_PLAN.md`). The `framelog`
+  commands (`framelog_client.py`, `framelog_mapping.py`, `framelog_align.py`,
+  `framelog_import.py`) are the program's only network access: they read the
+  external Frame log export API with a bearer token passed in the
+  environment, and `framelog apply` writes the mapped frames through the
+  ordinary `metadata set` path, one atomic payload. Imported values
+  overwrite; absent ones leave fields alone. Negative-only fields with no
+  roll fallback (`place`: GPS, location name, address; `framelog_frame_uid`)
+  live outside `NegativeMetadata`. An alignment is always monotonic: the app
+  shifts later rows together, and `apply` rejects anything else.
 
 ### 9.2 Writing the roll
 
@@ -1328,7 +1344,8 @@ handles it.
 
 No App Store, no Developer ID signing, no notarisation, no sandboxing, no
 Intel build. Ad-hoc signing ("Sign to Run Locally") is enough for this local,
-single-user, single-machine release. macOS 14+, Apple silicon, Xcode 16.2,
+single-user, single-machine release (its one network use is the optional
+Frame log import, §9.1). macOS 14+, Apple silicon, Xcode 16.2,
 Swift 6, Python 3.13 pinned.
 
 Deferred, none scheduled: auto-crop from the recorded `valid_rect`, white

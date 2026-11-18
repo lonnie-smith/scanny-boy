@@ -1,6 +1,6 @@
 # Frame log metadata import
 
-Status: planned. Phases 1–6 below are implemented in order, one commit per phase.
+Status: implemented (phases 0–6, §8). The Swift phases still need a build and test run on a Mac.
 
 ## 1. Problem
 
