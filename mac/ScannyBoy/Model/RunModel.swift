@@ -627,7 +627,8 @@ final class RunModel {
              .gridCreated, .gridList, .gridDeleted,
              .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
              .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
-             .negativeComposed, .negativePublished:
+             .negativeComposed, .negativePublished,
+             .framelogRolls, .framelogRoll:
             break
         }
     }

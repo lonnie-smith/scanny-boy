@@ -201,7 +201,7 @@ final class ExportModel {
             .spotsReported, .scratchesReported, .cropSuggested, .baseFrameSet,
              .frameAnalyzed, .captureChecked, .captureSummary, .rollRefreshed,
              .negativeComposed, .negativePublished,
-            .unknown:
+            .framelogRolls, .framelogRoll, .unknown:
             break
         }
     }

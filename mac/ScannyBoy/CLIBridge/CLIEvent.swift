@@ -86,7 +86,12 @@ public struct CLIEvent: Sendable, Hashable {
     /// Protocol 28 adds the film-stock catalog: `metadata_values` for the
     /// `film` field carries a `film_kinds` map, and each `roll_list` entry
     /// carries the roll's `film` and `format`.
-    public static let supportedProtocolVersion = 28
+    ///
+    /// Protocol 29 adds the Frame log import: the `framelog` command family
+    /// (`framelog rolls`, `framelog roll` and `framelog apply`, all
+    /// one-shot, the token in `SCANNY_BOY_FRAMELOG_TOKEN`) and its
+    /// `framelog_rolls` and `framelog_roll` events.
+    public static let supportedProtocolVersion = 29
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -141,6 +146,8 @@ public struct CLIEvent: Sendable, Hashable {
         case captureChecked
         case captureSummary
         case rollRefreshed
+        case framelogRolls
+        case framelogRoll
         /// An event type this version of the app does not know. Its fields are
         /// still preserved.
         case unknown(String)
@@ -190,6 +197,8 @@ public struct CLIEvent: Sendable, Hashable {
             case "capture_checked": self = .captureChecked
             case "capture_summary": self = .captureSummary
             case "roll_refreshed": self = .rollRefreshed
+            case "framelog_rolls": self = .framelogRolls
+            case "framelog_roll": self = .framelogRoll
             default: self = .unknown(name)
             }
         }
@@ -239,6 +248,8 @@ public struct CLIEvent: Sendable, Hashable {
             case .captureChecked: "capture_checked"
             case .captureSummary: "capture_summary"
             case .rollRefreshed: "roll_refreshed"
+            case .framelogRolls: "framelog_rolls"
+            case .framelogRoll: "framelog_roll"
             case .unknown(let name): name
             }
         }
@@ -527,6 +538,19 @@ extension CLIEvent {
     }
     // `grid_deleted`
     public var gridProfileID: String? { fields["profile_id"]?.stringValue }
+
+    // `framelog_rolls` (protocol version 29): entries that fail to decode
+    // are dropped, as the grid list drops its malformed profiles.
+    var frameLogRolls: [FrameLogRollSummary]? {
+        fields["rolls"]?.arrayValue?.compactMap { entry in
+            entry.objectValue.flatMap { FrameLogRollSummary(fields: $0) }
+        }
+    }
+
+    // `framelog_roll`: the whole event body, decoded by `FrameLogRollDetail`.
+    var frameLogRoll: FrameLogRollDetail? {
+        FrameLogRollDetail(fields: fields)
+    }
 
     // `spots_reported` (protocol version 13): a negative's spot set as the
     // app draws it. Every rect is display space, already transformed — the
