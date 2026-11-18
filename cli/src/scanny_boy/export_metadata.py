@@ -62,6 +62,16 @@ DATE_TIME_ORIGINAL = 36867
 SUBSEC_TIME_ORIGINAL = 37521
 LENS_MODEL = 42036
 ISO_SPEED_RATINGS = 34855
+OFFSET_TIME_ORIGINAL = 36881
+GPS_IFD_POINTER = 34853
+
+# GPS IFD tags.
+GPS_VERSION_ID = 0
+GPS_LATITUDE_REF = 1
+GPS_LATITUDE = 2
+GPS_LONGITUDE_REF = 3
+GPS_LONGITUDE = 4
+GPS_H_POSITIONING_ERROR = 31
 
 _ISO_PATTERN = re.compile(r"(?:ISO\s*)?(\d{1,5})", re.IGNORECASE)
 
@@ -69,6 +79,11 @@ _ISO_PATTERN = re.compile(r"(?:ISO\s*)?(\d{1,5})", re.IGNORECASE)
 # `scannyboy:provenance` property — what makes an exported file
 # interpretable without the database.
 SCANNY_BOY_NS = "http://scannyboy.local/ns/1.0/"
+IPTC_CORE_NS = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+EXIF_NS = "http://ns.adobe.com/exif/1.0/"
+
+_OFFSET_PATTERN = re.compile(r"[+-]\d{2}:\d{2}")
+_SECONDS_DENOMINATOR = 10000
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,6 +100,16 @@ class ExportMetadata:
     iso: str | None = None
     # The intended capture time, parsed from the manifest's ISO string.
     date_time_original: datetime.datetime | None = None
+    # Frame log import: the logged UTC offset (`±HH:MM`; only carried when
+    # the logged time is what DateTimeOriginal holds), the place, and uids.
+    offset_time_original: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    gps_accuracy_m: float | None = None
+    location_name: str | None = None
+    address: str | None = None
+    framelog_roll_uid: str | None = None
+    framelog_frame_uid: str | None = None
 
     @property
     def has_any(self) -> bool:
@@ -120,7 +145,25 @@ def export_metadata_for(
         )
     except ValueError:
         date_time_original = None
+    capture = negative.capture_time
+    offset = (
+        capture.logged_offset
+        if capture.logged_datetime_original and capture.logged_offset
+        else None
+    )
+    if offset is not None and not _OFFSET_PATTERN.fullmatch(offset):
+        offset = None
+    place = negative.place
+    has_fix = place.latitude is not None and place.longitude is not None
     return ExportMetadata(
+        offset_time_original=offset,
+        latitude=place.latitude if has_fix else None,
+        longitude=place.longitude if has_fix else None,
+        gps_accuracy_m=place.gps_accuracy_m if has_fix else None,
+        location_name=place.location_name or None,
+        address=place.address or None,
+        framelog_roll_uid=manifest.metadata.framelog_roll_uid or None,
+        framelog_frame_uid=negative.framelog_frame_uid or None,
         camera=effective.get("camera"),
         lens=effective.get("lens"),
         city=effective.get("city"),
@@ -130,6 +173,21 @@ def export_metadata_for(
         iso=effective.get("iso"),
         date_time_original=date_time_original,
     )
+
+
+def _xmp_coordinate(value: float, hemispheres: str) -> str:
+    """XMP GPS coordinate text, `DDD,MM.mmmmmK` (e.g. `41,52.6860N`)."""
+    ref = hemispheres[0] if value >= 0 else hemispheres[1]
+    degrees, minutes = _split_minutes(abs(value))
+    return f"{degrees},{minutes:.5f}{ref}"
+
+
+def _split_minutes(absolute: float) -> tuple[int, float]:
+    degrees = int(absolute)
+    minutes = round((absolute - degrees) * 60, 5)
+    if minutes >= 60:
+        degrees, minutes = degrees + 1, 0.0
+    return degrees, minutes
 
 
 def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
@@ -166,6 +224,33 @@ def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
         if metadata.iso is not None
         else ""
     )
+    location = (
+        f"<Iptc4xmpCore:Location>{escape(metadata.location_name)}</Iptc4xmpCore:Location>"
+        if metadata.location_name is not None
+        else ""
+    )
+    gps = ""
+    if metadata.latitude is not None and metadata.longitude is not None:
+        gps = (
+            f"<exif:GPSLatitude>{_xmp_coordinate(metadata.latitude, 'NS')}"
+            "</exif:GPSLatitude>"
+            f"<exif:GPSLongitude>{_xmp_coordinate(metadata.longitude, 'EW')}"
+            "</exif:GPSLongitude>"
+        )
+    framelog = "".join(
+        f"<scannyboy:{name}>{escape(value)}</scannyboy:{name}>"
+        for name, value in (
+            ("address", metadata.address),
+            ("framelogRollUid", metadata.framelog_roll_uid),
+            ("framelogFrameUid", metadata.framelog_frame_uid),
+        )
+        if value is not None
+    )
+    extra_namespaces = ""
+    if location:
+        extra_namespaces += f'xmlns:Iptc4xmpCore="{IPTC_CORE_NS}" '
+    if gps:
+        extra_namespaces += f'xmlns:exif="{EXIF_NS}" '
     provenance_items = (
         f"<scannyboy:provenance>{escape(json.dumps(provenance, sort_keys=True))}"
         "</scannyboy:provenance>"
@@ -177,8 +262,10 @@ def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
         '<rdf:Description rdf:about="" '
         'xmlns:dc="http://purl.org/dc/elements/1.1/" '
         'xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" '
+        f"{extra_namespaces}"
         f'xmlns:scannyboy="{SCANNY_BOY_NS}">'
-        f"{description_items}{city}{state}{film}{iso}{provenance_items}"
+        f"{description_items}{city}{state}{location}{gps}{film}{iso}"
+        f"{framelog}{provenance_items}"
         "</rdf:Description>"
         "</rdf:RDF>"
         "</x:xmpmeta>"
@@ -189,6 +276,56 @@ def _xmp_packet(metadata: ExportMetadata, provenance: dict) -> str:
 def build_xmp(metadata: ExportMetadata, provenance: dict) -> bytes:
     """The `xml ` box's payload: the XMP packet, UTF-8 bytes."""
     return _xmp_packet(metadata, provenance).encode("utf-8")
+
+
+def _dms_rationals(value: float) -> list[int]:
+    """Flat RATIONAL[3] (numerator, denominator pairs): whole degrees,
+    whole minutes, then seconds over 10000 so precision survives."""
+    absolute = abs(value)
+    degrees = int(absolute)
+    minutes = int((absolute - degrees) * 60)
+    seconds = round((absolute - degrees - minutes / 60) * 3600 * _SECONDS_DENOMINATOR)
+    if seconds >= 60 * _SECONDS_DENOMINATOR:
+        seconds -= 60 * _SECONDS_DENOMINATOR
+        minutes += 1
+    if minutes >= 60:
+        minutes -= 60
+        degrees += 1
+    return [degrees, 1, minutes, 1, seconds, _SECONDS_DENOMINATOR]
+
+
+def _gps_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
+    """The GPS IFD, in ascending tag order (a TIFF requirement). Empty
+    unless both coordinates are set."""
+    if metadata.latitude is None or metadata.longitude is None:
+        return {}
+    ascii_type = tifftools.Datatype.ASCII
+    rational = tifftools.Datatype.RATIONAL
+    tags: dict[int, dict] = {
+        GPS_VERSION_ID: {
+            "data": [2, 3, 0, 0],
+            "datatype": tifftools.Datatype.BYTE,
+        },
+        GPS_LATITUDE_REF: {
+            "data": "N" if metadata.latitude >= 0 else "S",
+            "datatype": ascii_type,
+        },
+        GPS_LATITUDE: {"data": _dms_rationals(metadata.latitude), "datatype": rational},
+        GPS_LONGITUDE_REF: {
+            "data": "E" if metadata.longitude >= 0 else "W",
+            "datatype": ascii_type,
+        },
+        GPS_LONGITUDE: {
+            "data": _dms_rationals(metadata.longitude),
+            "datatype": rational,
+        },
+    }
+    if metadata.gps_accuracy_m is not None:
+        tags[GPS_H_POSITIONING_ERROR] = {
+            "data": [round(metadata.gps_accuracy_m * 100), 100],
+            "datatype": rational,
+        }
+    return dict(sorted(tags.items()))
 
 
 def _exif_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
@@ -215,7 +352,12 @@ def _exif_ifd_tags(metadata: ExportMetadata) -> dict[int, dict]:
             "data": [iso],
             "datatype": tifftools.Datatype.SHORT,
         }
-    return tags
+    if metadata.offset_time_original is not None:
+        tags[OFFSET_TIME_ORIGINAL] = {
+            "data": metadata.offset_time_original,
+            "datatype": tifftools.Datatype.ASCII,
+        }
+    return dict(sorted(tags.items()))
 
 
 def build_exif(metadata: ExportMetadata, image_description: str) -> bytes:
@@ -245,6 +387,12 @@ def build_exif(metadata: ExportMetadata, image_description: str) -> bytes:
         exif_ifd = {"tags": exif_tags, "ifds": []}
         ifd0["tags"][Tag.ExifIFD.value] = {
             "ifds": [[exif_ifd]],
+            "datatype": tifftools.Datatype.LONG,
+        }
+    gps_tags = _gps_ifd_tags(metadata)
+    if gps_tags:
+        ifd0["tags"][GPS_IFD_POINTER] = {
+            "ifds": [[{"tags": gps_tags, "ifds": []}]],
             "datatype": tifftools.Datatype.LONG,
         }
     out = io.BytesIO()
