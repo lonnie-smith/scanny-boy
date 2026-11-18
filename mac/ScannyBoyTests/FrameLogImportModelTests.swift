@@ -13,6 +13,14 @@ private final class ImportedManifestBox {
 @Suite("Frame log import model")
 @MainActor
 struct FrameLogImportModelTests {
+    private static func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
     private static let token = "fl_abcdefgh0123456789"
     private static let rollURL = URL(filePath: "/tmp/roll")
 
@@ -70,61 +78,61 @@ struct FrameLogImportModelTests {
 
     @Test("the roll list loads newest first with the linked roll preselected")
     func loadsRolls() async throws {
-        try await TestSupport.withTemporaryDirectory { directory in
-            let model = try Self.makeModel(
-                directory: directory,
-                tokens: InMemoryFrameLogTokenStore(token: Self.token),
-                box: ImportedManifestBox()
-            )
-            await model.loadRolls()
-            #expect(model.phase == .choosingRoll)
-            #expect(model.rolls.map(\.rollNumber) == [42, 41])
-            #expect(model.selectedRollUID == "bbbbbbbbbb")
-            let first = try #require(model.rolls.first)
-            let second = try #require(model.rolls.last)
-            #expect(model.isLikelyMatch(first))
-            #expect(!model.isLikelyMatch(second))
-        }
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try Self.makeModel(
+            directory: directory,
+            tokens: InMemoryFrameLogTokenStore(token: Self.token),
+            box: ImportedManifestBox()
+        )
+        await model.loadRolls()
+        #expect(model.phase == .choosingRoll)
+        #expect(model.rolls.map(\.rollNumber) == [42, 41])
+        #expect(model.selectedRollUID == "bbbbbbbbbb")
+        let first = try #require(model.rolls.first)
+        let second = try #require(model.rolls.last)
+        #expect(model.isLikelyMatch(first))
+        #expect(!model.isLikelyMatch(second))
     }
 
     @Test("choosing a roll builds the alignment, and apply hands the manifest over")
     func choosesAndApplies() async throws {
-        try await TestSupport.withTemporaryDirectory { directory in
-            let box = ImportedManifestBox()
-            let model = try Self.makeModel(
-                directory: directory,
-                tokens: InMemoryFrameLogTokenStore(token: Self.token),
-                box: box
-            )
-            await model.loadRolls()
-            let roll = try #require(model.selectedRoll)
-            await model.choose(roll: roll)
-            #expect(model.phase == .aligning)
-            #expect(model.alignment?.matchedCount == 2)
-            #expect(model.framesByNumber.count == 3)
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = ImportedManifestBox()
+        let model = try Self.makeModel(
+            directory: directory,
+            tokens: InMemoryFrameLogTokenStore(token: Self.token),
+            box: box
+        )
+        await model.loadRolls()
+        let roll = try #require(model.selectedRoll)
+        await model.choose(roll: roll)
+        #expect(model.phase == .aligning)
+        #expect(model.alignment?.matchedCount == 2)
+        #expect(model.framesByNumber.count == 3)
 
-            model.setFrame(row: 0, to: 2)
-            #expect(model.alignment?.rows.map(\.frameNumber) == [2, 3])
+        model.setFrame(row: 0, to: 2)
+        #expect(model.alignment?.rows.map(\.frameNumber) == [2, 3])
 
-            await model.apply()
-            #expect(model.didImport)
-            #expect(box.manifest?.metadata.framelogRollUID == "bbbbbbbbbb")
-            #expect(box.manifest?.metadata.framelogRollNumber == 42)
-        }
+        await model.apply()
+        #expect(model.didImport)
+        #expect(box.manifest?.metadata.framelogRollUID == "bbbbbbbbbb")
+        #expect(box.manifest?.metadata.framelogRollNumber == 42)
     }
 
     @Test("without a token the model fails before running anything")
     func noToken() async throws {
-        try await TestSupport.withTemporaryDirectory { directory in
-            let model = try Self.makeModel(
-                directory: directory,
-                tokens: InMemoryFrameLogTokenStore(),
-                box: ImportedManifestBox()
-            )
-            await model.loadRolls()
-            #expect(model.phase == .failed(FrameLogImportModel.noTokenMessage))
-            model.acknowledgeFailure()
-            #expect(model.phase == .choosingRoll)
-        }
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = try Self.makeModel(
+            directory: directory,
+            tokens: InMemoryFrameLogTokenStore(),
+            box: ImportedManifestBox()
+        )
+        await model.loadRolls()
+        #expect(model.phase == .failed(FrameLogImportModel.noTokenMessage))
+        model.acknowledgeFailure()
+        #expect(model.phase == .choosingRoll)
     }
 }

@@ -9,6 +9,14 @@ import Testing
 @Suite("Frame log credentials and settings")
 @MainActor
 struct FrameLogCredentialsTests {
+    private static func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "scanny-boy-tests", directoryHint: .isDirectory)
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
     private static func isolatedDefaults() -> UserDefaults {
         UserDefaults(suiteName: "scanny-boy-tests-\(UUID().uuidString)")!
     }
@@ -94,43 +102,43 @@ struct FrameLogCredentialsTests {
 
     @Test("test connection reports the roll count the CLI returns")
     func testConnectionCountsRolls() async throws {
-        try await TestSupport.withTemporaryDirectory { directory in
-            let executable = try TestSupport.writeTestExecutable(
-                #"""
-                if [ "$SCANNY_BOY_FRAMELOG_TOKEN" = "\#(Self.token)" ]; then
-                  echo '{"protocol_version":29,"event":"framelog_rolls","rolls":[{"uid":"abcde12345","roll_number":1},{"uid":"fghij67890","roll_number":2}]}'
-                fi
-                echo '{"protocol_version":29,"event":"finished","status":"success","exit_status":0}'
-                """#,
-                in: directory
-            )
-            let model = FrameLogConnectionModel(
-                runner: CLIRunner(executable: executable),
-                tokens: InMemoryFrameLogTokenStore(token: Self.token),
-                settings: FrameLogSettings(defaults: Self.isolatedDefaults())
-            )
-            await model.testConnection()
-            #expect(model.testState == .connected(rolls: 2))
-        }
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            #"""
+            if [ "$SCANNY_BOY_FRAMELOG_TOKEN" = "\#(Self.token)" ]; then
+              echo '{"protocol_version":29,"event":"framelog_rolls","rolls":[{"uid":"abcde12345","roll_number":1},{"uid":"fghij67890","roll_number":2}]}'
+            fi
+            echo '{"protocol_version":29,"event":"finished","status":"success","exit_status":0}'
+            """#,
+            in: directory
+        )
+        let model = FrameLogConnectionModel(
+            runner: CLIRunner(executable: executable),
+            tokens: InMemoryFrameLogTokenStore(token: Self.token),
+            settings: FrameLogSettings(defaults: Self.isolatedDefaults())
+        )
+        await model.testConnection()
+        #expect(model.testState == .connected(rolls: 2))
     }
 
     @Test("test connection shows the CLI's error message")
     func testConnectionShowsError() async throws {
-        try await TestSupport.withTemporaryDirectory { directory in
-            let executable = try TestSupport.writeTestExecutable(
-                #"""
-                echo '{"protocol_version":29,"event":"error","code":"FRAMELOG_UNAUTHORIZED","message":"bad token"}'
-                echo '{"protocol_version":29,"event":"finished","status":"failed","exit_status":1}'
-                """#,
-                in: directory
-            )
-            let model = FrameLogConnectionModel(
-                runner: CLIRunner(executable: executable),
-                tokens: InMemoryFrameLogTokenStore(token: Self.token),
-                settings: FrameLogSettings(defaults: Self.isolatedDefaults())
-            )
-            await model.testConnection()
-            #expect(model.testState == .failed("bad token"))
-        }
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = try TestSupport.writeTestExecutable(
+            #"""
+            echo '{"protocol_version":29,"event":"error","code":"FRAMELOG_UNAUTHORIZED","message":"bad token"}'
+            echo '{"protocol_version":29,"event":"finished","status":"failed","exit_status":1}'
+            """#,
+            in: directory
+        )
+        let model = FrameLogConnectionModel(
+            runner: CLIRunner(executable: executable),
+            tokens: InMemoryFrameLogTokenStore(token: Self.token),
+            settings: FrameLogSettings(defaults: Self.isolatedDefaults())
+        )
+        await model.testConnection()
+        #expect(model.testState == .failed("bad token"))
     }
 }
