@@ -240,6 +240,10 @@ scanny-boy apply-metadata --roll DIR
 scanny-boy metadata set    --roll DIR --payload JSON
 scanny-boy metadata values --field FIELD
 
+scanny-boy framelog rolls [--status all|active|finished] [--base-url URL]
+scanny-boy framelog roll  --roll DIR --ref UID|NUMBER [--base-url URL]
+scanny-boy framelog apply --roll DIR --ref UID --assignments JSON [--base-url URL]
+
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
 scanny-boy edit crop   --roll DIR --negative ID (--x PX --y PX --width PX --height PX
@@ -562,6 +566,24 @@ mapping each returned stock that has a kind to it, so the app can set the
 roll's film kind when a stock is picked. `film_kinds` is omitted for every
 other field; the catalog never overwrites a stored kind when a value is
 used again.
+
+`framelog` reads roll and frame metadata from the Frame log export API
+(`<base-url>/api/framelogger/export/v1`, default base URL
+`https://lonnie-smith.com`); see `docs/METADATA_IMPORT_PLAN.md`. Every
+`framelog` command reads its bearer token from the `SCANNY_BOY_FRAMELOG_TOKEN`
+environment variable (never argv), runs one-shot (never through `serve`), and
+fails with one of the `FRAMELOG_*` codes on a transport or API failure.
+`framelog rolls` emits one `framelog_rolls` event. `framelog roll` fetches one
+roll by uid or roll number and emits one `framelog_roll` event carrying the
+roll, its frames' display fields, and a default `alignment` of the `--roll`
+roll's sequenced negatives to frame numbers. `framelog apply` validates
+`--assignments` (`{negative_id: frame_number | null}`; numbers in
+`1..last_frame`, strictly increasing in sequence order), re-fetches the roll,
+maps every assigned frame to `metadata set` keys, writes them as one atomic
+`metadata set` payload (imported values overwrite; absent source values leave
+fields untouched), and emits `metadata_updated`. It fails with
+`NEGATIVE_NOT_FOUND` for an unknown negative and `INVALID_METADATA` for an
+out-of-range or non-monotonic assignment.
 
 `edit rotate` records a 90-degree rotation of one or more negatives —
 `cw` clockwise,
@@ -948,6 +970,8 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
+| `framelog_rolls` | The answer to `framelog rolls`. Carries `rolls`: `{uid, roll_number, film, camera, iso, created_at, finished_at, frame_count, last_frame, first_captured_at, last_captured_at}` each. Carries no `run_id`. |
+| `framelog_roll` | The answer to `framelog roll`. Carries `roll` (`{uid, roll_number, film, camera, iso, created_at, finished_at, frame_count, last_frame, missing_frame_numbers}`), `frames` (`{uid, frame_number, captured_local, precision, offset, lens, caption, location_name, address, city, state, has_position}` each, in frame order), `alignment` (`{negative_id, frame_number}` per sequenced negative, in sequence order; `frame_number` null for no match) and `linked` (the roll is already linked to this Frame log roll). Carries no `run_id`. |
 | `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first), plus `film_kinds` (stock name to `colour`/`monochrome`) when `field` is `film`. |
 | `crop_suggested` | The answer to `edit suggest-crop`. Carries `negative_id`, `rect` (`{x, y, width, height}` on the full uncropped display canvas, or `null` exactly when `refused` is set), `canvas_width`, `canvas_height`, `preset` (the ratio fitted, or `null` when unconstrained) and `refused` (a refusal token or `null`). Carries no `run_id`. |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` plus an optional `source: "auto"`, or `null`), and `preview_path`. |
@@ -1078,6 +1102,12 @@ staging directories, and reruns the incomplete negative.
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 | `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
+| `FRAMELOG_NO_TOKEN` | `SCANNY_BOY_FRAMELOG_TOKEN` is unset or empty |
+| `FRAMELOG_UNAUTHORIZED` | The Frame log API answered 401 or 403 (token missing, bad, or revoked) |
+| `FRAMELOG_NOT_FOUND` | The Frame log API answered 404 (no such roll) |
+| `FRAMELOG_RATE_LIMITED` | The Frame log API answered 429; the message names `Retry-After` when given |
+| `FRAMELOG_UNREACHABLE` | DNS, connection, TLS, or timeout failure reaching the Frame log API |
+| `FRAMELOG_BAD_RESPONSE` | Any other HTTP status, a non-JSON body, a missing required field, or `apiVersion` other than 1 |
 | `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `JXL_ENCODER_UNAVAILABLE` | libjxl could not be reached from the export process — a packaging failure, not a user error; the whole export stops |
