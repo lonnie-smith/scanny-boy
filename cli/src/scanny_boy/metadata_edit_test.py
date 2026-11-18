@@ -24,11 +24,11 @@ from scanny_boy.roll_manifest import (
     effective_metadata,
     load_roll_manifest,
 )
-from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.roll_manifest_schema_test_support import (
     assert_matches_roll_manifest_schema,
     load_roll_manifest_schema,
 )
+from scanny_boy.roll_manifest_test import _negative, _run
 from scanny_boy.schema_test_support import assert_matches_schema, load_schema
 from scanny_boy.work_dir_support import make_roll_dir
 

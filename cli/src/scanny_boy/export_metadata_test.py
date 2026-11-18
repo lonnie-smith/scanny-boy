@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import xml.etree.ElementTree as ET
 
 import pytest
 import tifftools
@@ -23,6 +24,7 @@ from scanny_boy.export_metadata import (
 from scanny_boy.roll_manifest import (
     CaptureTime,
     NegativeMetadata,
+    NegativePlace,
     NegativeRecord,
     RollManifest,
     RollMetadata,
@@ -243,10 +245,6 @@ def test_the_full_resolved_record_round_trips_through_both_payloads():
 
 # --- Frame log: GPS, offset, uids -------------------------------------------
 
-import xml.etree.ElementTree as ET  # noqa: E402
-
-from scanny_boy.roll_manifest import NegativePlace  # noqa: E402
-
 
 def _gps_tags(metadata: ExportMetadata) -> dict:
     gps = _ifd0(metadata).get(34853)
@@ -297,7 +295,7 @@ def test_no_gps_ifd_without_both_coordinates():
 def test_offset_time_original_tag_and_ordering():
     tags = _exif_ifd_tags(
         ExportMetadata(
-            date_time_original=datetime.datetime(2026, 8, 1, 12, 0, 1),
+            date_time_original=datetime.datetime.fromisoformat("2026-08-01T12:00:01"),
             lens="35mm",
             iso="400",
             offset_time_original="+02:00",
