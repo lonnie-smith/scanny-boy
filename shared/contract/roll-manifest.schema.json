@@ -522,14 +522,45 @@
         "source_datetime_original",
         "intended_datetime_original",
         "applied_datetime_original",
-        "date_override"
+        "date_override",
+        "logged_datetime_original",
+        "logged_offset"
       ],
       "properties": {
         "source_datetime_original": { "type": ["string", "null"] },
         "intended_datetime_original": { "type": ["string", "null"] },
         "applied_datetime_original": { "type": ["string", "null"] },
-        "date_override": { "type": ["string", "null"] }
+        "date_override": { "type": ["string", "null"] },
+        "logged_datetime_original": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+          "description": "The Frame log's logged local wall time; when set it is the negative's intended time and consumes no rank."
+        },
+        "logged_offset": {
+          "type": ["string", "null"],
+          "pattern": "^[+-]\\d{2}:\\d{2}$",
+          "description": "The logged time's UTC offset; only meaningful with logged_datetime_original."
+        }
       }
+    },
+    "negativePlace": {
+      "type": "object",
+      "required": [
+        "latitude",
+        "longitude",
+        "gps_accuracy_m",
+        "location_name",
+        "address"
+      ],
+      "properties": {
+        "latitude": { "type": ["number", "null"], "minimum": -90, "maximum": 90 },
+        "longitude": { "type": ["number", "null"], "minimum": -180, "maximum": 180 },
+        "gps_accuracy_m": { "type": ["number", "null"], "minimum": 0 },
+        "location_name": { "type": ["string", "null"] },
+        "address": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false,
+      "description": "Where the negative was shot, imported from the Frame log. Negative-only: no roll-level fallback."
     },
     "run": {
       "type": "object",
@@ -587,6 +618,8 @@
         "error_message",
         "capture_time",
         "metadata",
+        "framelog_frame_uid",
+        "place",
         "preview_path",
         "normalized_fill",
         "normalization"
@@ -654,6 +687,11 @@
         "error_message": { "type": ["string", "null"] },
         "capture_time": { "$ref": "#/definitions/captureTime" },
         "metadata": { "$ref": "#/definitions/negativeMetadata" },
+        "framelog_frame_uid": {
+          "type": ["string", "null"],
+          "description": "The linked Frame log frame's uid."
+        },
+        "place": { "$ref": "#/definitions/negativePlace" },
         "preview_path": {
           "type": ["string", "null"],
           "description": "CLI-generated preview of the negative as its edits render so far; null until first generated."
@@ -831,7 +869,9 @@
         "state",
         "camera",
         "lens",
-        "caption"
+        "caption",
+        "framelog_roll_uid",
+        "framelog_roll_number"
       ],
       "properties": {
         "roll_capture_date": {
@@ -845,7 +885,12 @@
         "state": { "type": ["string", "null"] },
         "camera": { "type": ["string", "null"] },
         "lens": { "type": ["string", "null"] },
-        "caption": { "type": ["string", "null"] }
+        "caption": { "type": ["string", "null"] },
+        "framelog_roll_uid": {
+          "type": ["string", "null"],
+          "description": "The linked Frame log roll's uid."
+        },
+        "framelog_roll_number": { "type": ["integer", "null"], "minimum": 1 }
       },
       "additionalProperties": false
     }

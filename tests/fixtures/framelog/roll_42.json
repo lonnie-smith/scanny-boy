@@ -1,0 +1,168 @@
+{
+  "apiVersion": 1,
+  "roll": {
+    "uid": "k3j9x0a1bc",
+    "rollNumber": 42,
+    "film": {"name": "Kodak Portra 400", "catalogId": 12},
+    "camera": {"name": "Nikon FM2", "catalogId": 3},
+    "iso": 400,
+    "createdAt": "2026-09-30T14:02:11.000Z",
+    "finishedAt": "2026-10-05T20:41:00.000Z",
+    "frameCount": 6,
+    "lastFrame": 7,
+    "firstCapturedAt": "2026-10-01T15:10:00.000Z",
+    "lastCapturedAt": "2026-10-05T19:58:00.000Z",
+    "missingFrameNumbers": [4]
+  },
+  "frames": [
+    {
+      "uid": "a8f2m4q9zz",
+      "frameNumber": 1,
+      "capturedAt": {
+        "utc": "2026-10-01T15:10:00.000Z",
+        "local": "2026-10-01T10:10:00",
+        "offset": "-05:00",
+        "timeZone": "America/Chicago",
+        "timeZoneSource": "coordinates",
+        "precision": "instant"
+      },
+      "lens": {"name": "Nikkor 50mm f/1.8", "catalogId": 7},
+      "position": {
+        "latitude": 41.8781,
+        "longitude": -87.6298,
+        "accuracyM": 12,
+        "source": "gps",
+        "approximate": false
+      },
+      "place": {
+        "locationId": "p0c7d2e8f1",
+        "locationName": "Holy Name Cathedral",
+        "locationTag": "church",
+        "placeName": "Holy Name Cathedral",
+        "address": "735 N State St, Chicago, IL 60654"
+      },
+      "notes": "f/8 1/125"
+    },
+    {
+      "uid": "b7k2n5r8tw",
+      "frameNumber": 2,
+      "capturedAt": {
+        "utc": null,
+        "local": "2026-10-02",
+        "offset": null,
+        "timeZone": "America/Chicago",
+        "timeZoneSource": "default",
+        "precision": "date"
+      },
+      "lens": {"name": "Nikkor 28mm f/2.8", "catalogId": 9},
+      "position": null,
+      "place": {
+        "locationId": "p4a1d6f0c3",
+        "locationName": "Millennium Park",
+        "locationTag": "park",
+        "placeName": "Millennium Park",
+        "address": "201 E Randolph St, Chicago, IL 60602"
+      },
+      "notes": "Cloud Gate reflection"
+    },
+    {
+      "uid": "c4d9e1f6gh",
+      "frameNumber": 3,
+      "capturedAt": null,
+      "lens": null,
+      "position": null,
+      "place": {
+        "locationId": null,
+        "locationName": null,
+        "locationTag": null,
+        "placeName": null,
+        "address": null
+      },
+      "notes": null
+    },
+    {
+      "uid": "d2m7p0s3vx",
+      "frameNumber": 5,
+      "capturedAt": {
+        "utc": "2026-10-03T13:45:00.000Z",
+        "local": "2026-10-03T15:45:00",
+        "offset": "+02:00",
+        "timeZone": "Europe/Paris",
+        "timeZoneSource": "coordinates",
+        "precision": "instant"
+      },
+      "lens": {"name": "Nikkor 85mm f/1.8G", "catalogId": 11},
+      "position": {
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "accuracyM": 8,
+        "source": "gps",
+        "approximate": false
+      },
+      "place": {
+        "locationId": "p7b3e9a2d5",
+        "locationName": null,
+        "locationTag": "street",
+        "placeName": "Rue de Rivoli",
+        "address": "12 Rue de Rivoli, 75004 Paris, France"
+      },
+      "notes": "Rainy, f/2 1/250"
+    },
+    {
+      "uid": "e9w5h1j4ka",
+      "frameNumber": 6,
+      "capturedAt": {
+        "utc": "2026-10-04T18:22:00.000Z",
+        "local": "2026-10-04T13:22:00",
+        "offset": "-05:00",
+        "timeZone": "America/Chicago",
+        "timeZoneSource": "coordinates",
+        "precision": "instant"
+      },
+      "lens": {"name": "Nikkor 50mm f/1.8", "catalogId": 7},
+      "position": {
+        "latitude": 41.8796,
+        "longitude": -87.6237,
+        "accuracyM": 150,
+        "source": "location",
+        "approximate": true
+      },
+      "place": {
+        "locationId": "p9e4a1c6b2",
+        "locationName": "Art Institute of Chicago",
+        "locationTag": "museum",
+        "placeName": "Art Institute of Chicago",
+        "address": "111 S Michigan Ave, Chicago, IL 60603, USA"
+      },
+      "notes": "Lion statues, f/11"
+    },
+    {
+      "uid": "f3r8t6y2lq",
+      "frameNumber": 7,
+      "capturedAt": {
+        "utc": "2026-10-05T19:58:00.000Z",
+        "local": "2026-10-05T14:58:00",
+        "offset": "-05:00",
+        "timeZone": "America/Chicago",
+        "timeZoneSource": "coordinates",
+        "precision": "instant"
+      },
+      "lens": null,
+      "position": {
+        "latitude": 41.8858,
+        "longitude": -87.6283,
+        "accuracyM": 5,
+        "source": "gps",
+        "approximate": false
+      },
+      "place": {
+        "locationId": "p2f6c8b0e4",
+        "locationName": null,
+        "locationTag": null,
+        "placeName": null,
+        "address": "233 S Wacker Dr, Chicago, IL 60606-4611"
+      },
+      "notes": "   "
+    }
+  ]
+}

@@ -246,6 +246,8 @@ def _save_roll_rows(session: Session, folder: str, manifest: RollManifest) -> No
         setattr(roll, field, getattr(manifest.metadata, field))
     for field in ROLL_ONLY_METADATA_FIELDS:
         setattr(roll, field, getattr(manifest.metadata, field))
+    roll.framelog_roll_uid = manifest.metadata.framelog_roll_uid
+    roll.framelog_roll_number = manifest.metadata.framelog_roll_number
 
     # Diff by key so re-saving an unchanged child is a no-op and removed
     # children (an adopted negative's removal) actually go away.
@@ -348,6 +350,12 @@ def _save_roll_rows(session: Session, folder: str, manifest: RollManifest) -> No
                 grid_cells=negative.grid_cells,
                 grid_pitch_ratio=negative.grid_pitch_ratio,
                 grid_alignment_ratio=negative.grid_alignment_ratio,
+                framelog_frame_uid=negative.framelog_frame_uid,
+                latitude=negative.place.latitude,
+                longitude=negative.place.longitude,
+                gps_accuracy_m=negative.place.gps_accuracy_m,
+                location_name=negative.place.location_name,
+                address=negative.place.address,
                 **{
                     field: getattr(negative.metadata, field)
                     for field in METADATA_FIELDS
@@ -456,6 +464,7 @@ def _load_roll_rows(
         CaptureTime,
         FrameRecord,
         NegativeMetadata,
+        NegativePlace,
         NegativeRecord,
         PairRecord,
         RollManifest,
@@ -596,7 +605,15 @@ def _load_roll_rows(
                 used_clahe_fallback=bool(n.used_clahe_fallback),
                 error_code=n.error_code,
                 error_message=n.error_message,
-                capture_time=CaptureTime(**n.capture_time),
+                capture_time=CaptureTime.from_dict(n.capture_time),
+                framelog_frame_uid=n.framelog_frame_uid,
+                place=NegativePlace(
+                    latitude=n.latitude,
+                    longitude=n.longitude,
+                    gps_accuracy_m=n.gps_accuracy_m,
+                    location_name=n.location_name,
+                    address=n.address,
+                ),
                 metadata=NegativeMetadata(
                     **{field: getattr(n, field) for field in METADATA_FIELDS}
                 ),
@@ -611,6 +628,8 @@ def _load_roll_rows(
         metadata=RollMetadata(
             roll_capture_date=roll.roll_capture_date,
             last_applied_at=roll.last_applied_at,
+            framelog_roll_uid=roll.framelog_roll_uid,
+            framelog_roll_number=roll.framelog_roll_number,
             **{field: getattr(roll, field) for field in METADATA_FIELDS},
             **{field: getattr(roll, field) for field in ROLL_ONLY_METADATA_FIELDS},
         ),

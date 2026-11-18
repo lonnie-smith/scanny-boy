@@ -1,0 +1,43 @@
+{
+  "rolls": [
+    {
+      "uid": "m2p8w4x6rc",
+      "rollNumber": 43,
+      "film": "Ilford HP5 Plus 400",
+      "camera": "Pentax K1000",
+      "iso": 400,
+      "createdAt": "2026-11-10T09:30:00.000Z",
+      "finishedAt": null,
+      "frameCount": 12,
+      "lastFrame": 13,
+      "firstCapturedAt": "2026-11-10T16:05:00.000Z",
+      "lastCapturedAt": "2026-11-16T21:12:00.000Z"
+    },
+    {
+      "uid": "k3j9x0a1bc",
+      "rollNumber": 42,
+      "film": "Kodak Portra 400",
+      "camera": "Nikon FM2",
+      "iso": 400,
+      "createdAt": "2026-09-30T14:02:11.000Z",
+      "finishedAt": "2026-10-05T20:41:00.000Z",
+      "frameCount": 6,
+      "lastFrame": 7,
+      "firstCapturedAt": "2026-10-01T15:10:00.000Z",
+      "lastCapturedAt": "2026-10-05T19:58:00.000Z"
+    },
+    {
+      "uid": "n1o2p3q4r5",
+      "rollNumber": 3,
+      "film": "Kodak Tri-X 400",
+      "camera": null,
+      "iso": null,
+      "createdAt": "2026-06-02T11:00:00.000Z",
+      "finishedAt": "2026-06-04T17:30:00.000Z",
+      "frameCount": 0,
+      "lastFrame": null,
+      "firstCapturedAt": null,
+      "lastCapturedAt": null
+    }
+  ]
+}

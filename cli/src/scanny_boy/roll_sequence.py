@@ -46,28 +46,41 @@ def sequence_negatives(manifest: RollManifest) -> list[str]:
 
 
 def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
-    """The rank-based applied-timestamp formula: noon plus `(rank - 1)`
-    seconds on a negative's effective date -- the roll's
-    `roll_capture_date`, or its own `date_override` when it has one. `rank`
-    is the negative's 1-based position among every negative sharing that
-    same effective date, counted in the roll's overall sequence order; a
-    roll with no overrides at all reduces to noon plus `(sequence - 1)`
-    seconds on `roll_capture_date` for everyone, which is the non-override
-    case.
+    """The applied-timestamp formula.
 
-    Returns `{}` when the roll has no `roll_capture_date` yet -- there is
-    no date to apply until one is set.
+    A negative carrying a logged time (`capture_time.logged_datetime_original`,
+    imported from the Frame log) uses it as is. It does not consume a rank:
+    it is returned even when the roll has no `roll_capture_date`, and the
+    rank-based negatives never count it.
+
+    Every other negative gets noon plus `(rank - 1)` seconds on its effective
+    date -- the roll's `roll_capture_date`, or its own `date_override` when
+    it has one. `rank` is the negative's 1-based position among the
+    rank-based negatives sharing that same effective date, counted in the
+    roll's overall sequence order; a roll with no overrides or logged times
+    reduces to noon plus `(sequence - 1)` seconds on `roll_capture_date` for
+    everyone.
+
+    Rank-based negatives are omitted when the roll has no
+    `roll_capture_date` -- there is no date to apply until one is set.
     """
     roll_date_text = manifest.metadata.roll_capture_date
-    if roll_date_text is None:
-        return {}
-    roll_date = datetime.date.fromisoformat(roll_date_text)
+    roll_date = (
+        datetime.date.fromisoformat(roll_date_text) if roll_date_text else None
+    )
 
     by_id = {n.negative_id: n for n in manifest.negatives}
     times: dict[str, datetime.datetime] = {}
     rank_by_date: dict[datetime.date, int] = {}
     for negative_id in sequence_negatives(manifest):
         negative = by_id[negative_id]
+        logged = negative.capture_time.logged_datetime_original
+        if logged:
+            times[negative_id] = datetime.datetime.fromisoformat(logged)
+            continue
+        if roll_date is None:
+            # Rank-based negatives need the roll's date, as before.
+            continue
         override = negative.capture_time.date_override
         date = datetime.date.fromisoformat(override) if override else roll_date
         rank_by_date[date] = rank_by_date.get(date, 0) + 1

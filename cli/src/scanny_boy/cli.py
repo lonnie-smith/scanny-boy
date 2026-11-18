@@ -31,6 +31,8 @@ from scanny_boy.events import (
     Finished,
     FlatFieldReferenceSet,
     FrameAnalyzed,
+    FramelogRoll,
+    FramelogRolls,
     GridCreated,
     GridDeleted,
     GridList,
@@ -461,6 +463,40 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FIELD",
         help="one of city, state, camera, lens",
     )
+
+    framelog = subparsers.add_parser(
+        "framelog", help="Import roll and frame metadata from the Frame log API."
+    )
+    framelog_subparsers = framelog.add_subparsers(
+        dest="framelog_command", required=True
+    )
+    default_base_url = "https://lonnie-smith.com"
+    framelog_rolls = framelog_subparsers.add_parser(
+        "rolls", help="List the Frame log rolls."
+    )
+    framelog_rolls.add_argument(
+        "--status", choices=["all", "active", "finished"], default="all"
+    )
+    framelog_rolls.add_argument("--base-url", default=default_base_url, metavar="URL")
+    framelog_roll = framelog_subparsers.add_parser(
+        "roll",
+        help="Fetch one Frame log roll and align it with a roll's negatives.",
+    )
+    framelog_roll.add_argument("--roll", required=True, metavar="DIR")
+    framelog_roll.add_argument("--ref", required=True, metavar="UID|NUMBER")
+    framelog_roll.add_argument("--base-url", default=default_base_url, metavar="URL")
+    framelog_apply = framelog_subparsers.add_parser(
+        "apply", help="Write a Frame log roll's metadata onto a roll's negatives."
+    )
+    framelog_apply.add_argument("--roll", required=True, metavar="DIR")
+    framelog_apply.add_argument("--ref", required=True, metavar="UID")
+    framelog_apply.add_argument(
+        "--assignments",
+        required=True,
+        metavar="JSON",
+        help="JSON object {negative_id: frame_number | null}",
+    )
+    framelog_apply.add_argument("--base-url", default=default_base_url, metavar="URL")
 
     edit = subparsers.add_parser(
         "edit", help="Record nondestructive edits against a roll's negatives."
@@ -2479,6 +2515,46 @@ def _run_metadata_command(args, writer: EventWriter) -> int:
     return 0
 
 
+def _run_framelog_command(args, writer: EventWriter) -> int:
+    """The `framelog rolls|roll|apply` subcommands: one-shot, no `run_id`.
+    The bearer token comes from the environment, never argv."""
+    from scanny_boy.framelog_client import FrameLogError
+    from scanny_boy.framelog_import import (
+        run_framelog_apply,
+        run_framelog_roll,
+        run_framelog_rolls,
+    )
+    from scanny_boy.metadata_edit import MetadataEditFailure
+
+    command = args.framelog_command
+    writer.write(Started(command=f"framelog {command}"))
+    try:
+        if command == "rolls":
+            event: Event = FramelogRolls(
+                rolls=run_framelog_rolls(args.status, args.base_url)
+            )
+        elif command == "roll":
+            event = FramelogRoll(
+                **run_framelog_roll(Path(args.roll), args.ref, args.base_url)
+            )
+        else:
+            manifest = run_framelog_apply(
+                Path(args.roll),
+                args.ref,
+                args.assignments,
+                args.base_url,
+                emit=writer.write,
+            )
+            event = MetadataUpdated(manifest=manifest)
+    except (FrameLogError, MetadataEditFailure) as exc:
+        writer.write(ErrorEvent(code=exc.code, message=exc.message))
+        writer.write(Finished(status="failed", exit_status=1))
+        return 1
+    writer.write(event)
+    writer.write(Finished(status="success", exit_status=0))
+    return 0
+
+
 def _run_export_command(args, writer: EventWriter) -> int:
     from scanny_boy.exporter import ExportFailure, parse_downsample, run_export
     from scanny_boy.roll_lock import (
@@ -2769,6 +2845,17 @@ def _dispatch_command(
             except RollBusyError as exc:
                 return _fail_roll_busy(writer, exc)
         return _run_metadata_command(args, writer)
+
+    if args.command == "framelog":
+        if args.framelog_command == "apply":
+            from scanny_boy.roll_lock import RollBusyError, exclusive_roll_lock
+
+            try:
+                with exclusive_roll_lock(Path(args.roll)):
+                    return _run_framelog_command(args, writer)
+            except RollBusyError as exc:
+                return _fail_roll_busy(writer, exc)
+        return _run_framelog_command(args, writer)
 
     if args.command == "rig":
         return _run_rig_command(args, writer)

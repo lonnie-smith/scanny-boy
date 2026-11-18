@@ -15,6 +15,7 @@ struct ScannyBoyApp: App {
     @State private var edit: EditModel?
     @State private var run: RunModel?
     @State private var export: ExportModel?
+    @State private var frameLog: FrameLogConnectionModel?
     @State private var activity: AppActivity?
     @State private var unavailableReason: String?
     @State private var keyboard = AppKeyboardState()
@@ -92,8 +93,8 @@ struct ScannyBoyApp: App {
         // Section 3.1: the library base is relocatable through a Settings
         // window.
         Settings {
-            if let library, let capture {
-                SettingsView(library: library, capture: capture)
+            if let library, let capture, let frameLog {
+                SettingsView(library: library, capture: capture, frameLog: frameLog)
             } else {
                 Text("Scanny Boy's CLI helper is unavailable.")
                     .padding(40)
@@ -115,6 +116,7 @@ struct ScannyBoyApp: App {
             let run = RunModel(runner: runner)
             let export = ExportModel(runner: runner)
             let configuration = ConfigurationModel(runner: runner)
+            frameLog = FrameLogConnectionModel(runner: runner)
             let camera = TetherCamera()
             let capture = CaptureSessionModel(runner: runner, camera: camera)
             let stitchQueue = StitchQueueModel(runner: runner)
@@ -188,6 +190,13 @@ struct FileMenuCommands: Commands {
                     name: .scannyBoyRequestGridProfiles, object: nil
                 )
             }
+            Divider()
+            Button("Import from Frame log…") {
+                NotificationCenter.default.post(
+                    name: .scannyBoyRequestFrameLogImport, object: nil
+                )
+            }
+            .disabled(!keyboard.canImportFromFrameLog)
         }
     }
 }
@@ -213,6 +222,12 @@ extension Notification.Name {
     )
     static let scannyBoyRequestGridProfiles = Notification.Name(
         "com.lonniesmith.scanny-boy.requestGridProfiles"
+    )
+    /// File > Import from Frame log… and the Metadata stage's button: open
+    /// `FrameLogImportSheet` on the selected roll. `ContentView` answers it
+    /// through `FrameLogImportPresentation`.
+    static let scannyBoyRequestFrameLogImport = Notification.Name(
+        "com.lonniesmith.scanny-boy.requestFrameLogImport"
     )
 }
 

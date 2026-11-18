@@ -28,6 +28,10 @@ final class AppKeyboardState {
     /// library has loaded, so File > Tethered Capture… and Add Scans… have
     /// something to add to.
     var hasSelectedRoll = false
+    /// A Frame log token is saved. Refreshed by `FrameLogImportPresentation`
+    /// when the app appears and whenever a window becomes key, so a token
+    /// saved in Settings enables the import without a relaunch.
+    var hasFrameLogToken = false
 
     /// Set by the Edit tab's preview pane while it is mounted.
     var previewHasOutput = false
@@ -49,6 +53,11 @@ final class AppKeyboardState {
 
     var canOpenIntake: Bool {
         hasSelectedRoll && workspaceIsFrontmost && !isBusy
+    }
+
+    /// File > Import from Frame log… and the Metadata stage's button.
+    var canImportFromFrameLog: Bool {
+        hasSelectedRoll && hasFrameLogToken && workspaceIsFrontmost && !isBusy
     }
 
     var canSelectAll: Bool {

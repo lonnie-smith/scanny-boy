@@ -5,7 +5,9 @@ decodes or stitches anything."""
 
 from __future__ import annotations
 
+import datetime
 import io
+import xml.etree.ElementTree as ET
 
 import pytest
 import tifftools
@@ -22,6 +24,7 @@ from scanny_boy.export_metadata import (
 from scanny_boy.roll_manifest import (
     CaptureTime,
     NegativeMetadata,
+    NegativePlace,
     NegativeRecord,
     RollManifest,
     RollMetadata,
@@ -238,3 +241,131 @@ def test_the_full_resolved_record_round_trips_through_both_payloads():
     assert "photoshop:State>Oregon<" in xmp
     assert "harbor morning" in xmp
     assert "scannyboy:film>Kodak Tri-X 400<" in xmp
+
+
+# --- Frame log: GPS, offset, uids -------------------------------------------
+
+
+def _gps_tags(metadata: ExportMetadata) -> dict:
+    gps = _ifd0(metadata).get(34853)
+    return {} if gps is None else gps["ifds"][0][0]["tags"]
+
+
+def _decimal(rationals: list[int]) -> float:
+    d, m, s = (rationals[i] / rationals[i + 1] for i in (0, 2, 4))
+    return d + m / 60 + s / 3600
+
+
+def test_gps_ifd_round_trips_and_is_sorted():
+    metadata = ExportMetadata(latitude=41.87810, longitude=12.56738, gps_accuracy_m=4.5)
+    tags = _gps_tags(metadata)
+    assert list(tags) == sorted(tags) == [0, 1, 2, 3, 4, 31]
+    assert list(tags[0]["data"]) == [2, 3, 0, 0]
+    assert tags[1]["data"] == "N" and tags[3]["data"] == "E"
+    assert _decimal(tags[2]["data"]) == pytest.approx(41.87810, abs=1e-6)
+    assert _decimal(tags[4]["data"]) == pytest.approx(12.56738, abs=1e-6)
+    assert tags[2]["data"][5] == 10000
+    assert tags[31]["data"] == [450, 100]
+
+
+def test_southern_western_hemispheres_use_refs_and_positive_values():
+    tags = _gps_tags(ExportMetadata(latitude=-33.8688, longitude=-151.2093))
+    assert tags[1]["data"] == "S" and tags[3]["data"] == "W"
+    assert _decimal(tags[2]["data"]) == pytest.approx(33.8688, abs=1e-6)
+    assert _decimal(tags[4]["data"]) == pytest.approx(151.2093, abs=1e-6)
+    assert 31 not in tags
+
+
+def test_gps_ifd_is_independently_readable_by_exifread():
+    import exifread
+
+    blob = build_exif(ExportMetadata(latitude=-33.8688, longitude=151.2093), "d")
+    tags = exifread.process_file(io.BytesIO(blob), details=False)
+    assert str(tags["GPS GPSLatitudeRef"]) == "S"
+    assert str(tags["GPS GPSLongitudeRef"]) == "E"
+    d, m, s = (float(r.num) / float(r.den) for r in tags["GPS GPSLatitude"].values)
+    assert d + m / 60 + s / 3600 == pytest.approx(33.8688, abs=1e-6)
+
+
+def test_no_gps_ifd_without_both_coordinates():
+    assert _gps_tags(ExportMetadata(latitude=1.0)) == {}
+    assert 34853 not in _ifd0(ExportMetadata(longitude=1.0, camera="x"))
+
+
+def test_offset_time_original_tag_and_ordering():
+    tags = _exif_ifd_tags(
+        ExportMetadata(
+            date_time_original=datetime.datetime.fromisoformat("2026-08-01T12:00:01"),
+            lens="35mm",
+            iso="400",
+            offset_time_original="+02:00",
+        )
+    )
+    assert tags[36881]["data"] == "+02:00"
+    assert list(tags) == sorted(tags)
+
+
+def test_export_metadata_for_carries_frame_log_fields():
+    negative = _negative(1)
+    negative.capture_time.logged_datetime_original = "2026-08-01T12:00:01"
+    negative.capture_time.logged_offset = "-07:00"
+    negative.place = NegativePlace(
+        latitude=45.5,
+        longitude=-122.6,
+        gps_accuracy_m=3.0,
+        location_name="Pier 9",
+        address="1 Main St",
+    )
+    negative.framelog_frame_uid = "frame-uid"
+    roll = _roll(negative)
+    roll.metadata.framelog_roll_uid = "roll-uid"
+    resolved = export_metadata_for(roll, negative)
+    assert resolved.offset_time_original == "-07:00"
+    assert (resolved.latitude, resolved.longitude) == (45.5, -122.6)
+    assert resolved.framelog_frame_uid == "frame-uid"
+    assert resolved.framelog_roll_uid == "roll-uid"
+
+
+def test_offset_needs_a_logged_time():
+    negative = _negative(1)
+    negative.capture_time.logged_offset = "+01:00"
+    assert export_metadata_for(_roll(negative), negative).offset_time_original is None
+
+
+def test_xmp_frame_log_elements_parse_and_escape():
+    metadata = ExportMetadata(
+        latitude=41.8781,
+        longitude=-87.6298,
+        location_name="A & B <pier>",
+        address="1 Main St",
+        framelog_roll_uid="r1",
+        framelog_frame_uid="f1",
+    )
+    xmp = build_xmp(metadata, {}).decode()
+    inner = xmp[xmp.index("<x:xmpmeta") : xmp.index("</x:xmpmeta>") + 12]
+    root = ET.fromstring(inner)
+    iptc = "{http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/}Location"
+    exif = "{http://ns.adobe.com/exif/1.0/}"
+    sb = "{http://scannyboy.local/ns/1.0/}"
+    assert root.find(f".//{iptc}").text == "A & B <pier>"
+    assert root.find(f".//{exif}GPSLatitude").text == "41,52.68600N"
+    assert root.find(f".//{exif}GPSLongitude").text == "87,37.78800W"
+    assert root.find(f".//{sb}address").text == "1 Main St"
+    assert root.find(f".//{sb}framelogRollUid").text == "r1"
+    assert root.find(f".//{sb}framelogFrameUid").text == "f1"
+
+
+def test_output_without_frame_log_data_is_unchanged():
+    metadata = ExportMetadata(camera="Nikon F3", lens="50mm", iso="400")
+    xmp = build_xmp(metadata, {}).decode()
+    for needle in (
+        "Location",
+        "GPS",
+        "framelog",
+        "address",
+        "Iptc4xmpCore",
+        "xmlns:exif",
+    ):
+        assert needle not in xmp
+    assert 34853 not in _ifd0(metadata)
+    assert 36881 not in _exif_ifd_tags(metadata)
