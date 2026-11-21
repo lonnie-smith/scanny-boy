@@ -1134,7 +1134,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped (strips), or does not match the declared grid / is not a regular grid (grids) |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
-| `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
+| `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH`; emitted a second time when that retry fails too and a last pass runs CLAHE on a log-encoded detection image |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 10` |

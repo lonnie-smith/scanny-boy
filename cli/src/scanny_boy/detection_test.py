@@ -83,3 +83,42 @@ def test_clahe_flag_changes_the_result():
     with_clahe = build_detection_image(frame, long_edge=600, clahe=True)
 
     assert not np.array_equal(without_clahe.image, with_clahe.image)
+
+
+def test_log_encode_lifts_dense_content_next_to_a_bright_rebate():
+    """An uninverted negative: a dim, textured picture beside a clear
+    rebate hundreds of times brighter. The linear stretch pins its top to
+    the rebate and crushes the picture into a few grey levels; the
+    log-encoded stretch spreads the picture's stops across the range."""
+    rng = np.random.default_rng(5)
+    height, width = 400, 600
+    # Three stops of picture, five to eight stops below the rebate.
+    picture = 0.03 * 2.0 ** (-3.0 * rng.random((height, width)))
+    picture[:, :40] = 0.9  # the rebate
+    frame = encode_from_linear(np.stack([picture] * 3, axis=-1).astype(np.float32))
+
+    linear = build_detection_image(frame, long_edge=600, clahe=False)
+    logged = build_detection_image(frame, long_edge=600, clahe=False, log_encode=True)
+
+    content = (slice(None), slice(60, None))
+    assert np.ptp(linear.image[content]) < 8
+    assert np.ptp(logged.image[content]) > 40
+    assert logged.scale == linear.scale
+
+
+def test_log_encode_is_not_swamped_by_clipped_black():
+    """Pixels clipped to zero sit at `LOG_FLOOR`, sixteen stops down. When
+    they fill the low percentile the stretch is capped at `LOG_MAX_STOPS`
+    below the high one, so the real tones keep most of the range."""
+    rng = np.random.default_rng(6)
+    height, width = 400, 600
+    picture = 0.03 * 2.0 ** (-3.0 * rng.random((height, width)))
+    picture[:, :40] = 0.9  # the rebate
+    picture[:, -60:] = 0.0  # clipped black, 10% of the frame
+    frame = encode_from_linear(np.stack([picture] * 3, axis=-1).astype(np.float32))
+
+    logged = build_detection_image(frame, long_edge=600, clahe=False, log_encode=True)
+
+    content = (slice(None), slice(60, -80))
+    assert np.ptp(logged.image[content]) > 80
+    assert logged.image[:, -40:].max() == 0
