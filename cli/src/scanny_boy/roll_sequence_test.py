@@ -224,3 +224,54 @@ def test_logged_times_are_returned_without_a_roll_capture_date():
     times = intended_times(_logged_roll(None))
 
     assert times == {"b": datetime.datetime(2025, 12, 24, 18, 45, 10)}  # noqa: DTZ001
+
+
+def test_a_sequence_anchor_ranks_in_place_of_the_capture_time():
+    """A re-scan shot last but anchored to an earlier slot sorts into that
+    slot, not to the end of the roll."""
+    manifest = _manifest(
+        runs=[_run(run_id="run-1"), _run(run_id="run-2")],
+        negatives=[
+            _completed_negative(
+                negative_id="first",
+                run_id="run-1",
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T12:00:00"
+                ),
+            ),
+            _completed_negative(
+                negative_id="rescanned",
+                run_id="run-2",
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T15:00:00",
+                    sequence_datetime_original="2026-08-02T12:00:05",
+                ),
+            ),
+            _completed_negative(
+                negative_id="third",
+                run_id="run-1",
+                capture_time=CaptureTime(
+                    source_datetime_original="2026-08-02T12:00:10"
+                ),
+            ),
+        ],
+    )
+
+    assert sequence_negatives(manifest) == ["first", "rescanned", "third"]
+
+
+def test_an_anchor_alone_makes_a_negative_sequenceable():
+    manifest = _manifest(
+        runs=[_run(run_id="run-1")],
+        negatives=[
+            _completed_negative(
+                negative_id="anchored",
+                run_id="run-1",
+                capture_time=CaptureTime(
+                    sequence_datetime_original="2026-08-02T12:00:00"
+                ),
+            ),
+        ],
+    )
+
+    assert sequence_negatives(manifest) == ["anchored"]

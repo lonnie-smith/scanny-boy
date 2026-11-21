@@ -309,6 +309,7 @@ def test_migration_0022_adds_the_columns_and_keeps_existing_rows(tmp_path):
     assert negative.capture_time.source_datetime_original == "2026-08-01T10:00:00"
     assert negative.capture_time.logged_datetime_original is None
     assert negative.capture_time.logged_offset is None
+    assert negative.capture_time.sequence_datetime_original is None
 
 
 def test_frame_log_fields_round_trip_through_the_database(roll_dir):
@@ -327,6 +328,7 @@ def test_frame_log_fields_round_trip_through_the_database(roll_dir):
     negative.place.address = "1 Main St"
     negative.capture_time.logged_datetime_original = "2026-08-01T10:30:00"
     negative.capture_time.logged_offset = "+01:00"
+    negative.capture_time.sequence_datetime_original = "2026-08-01T09:59:00"
     manifest.negatives.append(negative)
     write_roll_manifest(roll_dir, manifest)
 
