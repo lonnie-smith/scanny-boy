@@ -1702,7 +1702,7 @@ final class EditModel {
         }
     }
 
-    private static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
+    static func fetchRollManifest(runner: CLIRunner, roll: URL) async -> RollManifest? {
         // Recorded rather than returned immediately (M4): see
         // `RollLibrary.createRoll` — returning from inside the loop abandons
         // the stream and can SIGTERM a helper that is in the middle of its

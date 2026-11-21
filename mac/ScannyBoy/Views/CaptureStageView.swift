@@ -14,6 +14,7 @@ struct CaptureStageView: View {
     @State private var isConfirmingDiscard = false
     @State private var isConfirmingDiscardNegative = false
     @State private var isSelectingBaseFrameRegion = false
+    @State private var isPickingRescanTarget = false
 
     private let intervalChoices = [2, 3, 4, 5, 6, 8, 10]
 
@@ -39,13 +40,31 @@ struct CaptureStageView: View {
             .formStyle(.grouped)
 
             if !stitchQueue.negatives(for: capture.rollURL).isEmpty {
-                CaptureQueueList(stitchQueue: stitchQueue, rollURL: capture.rollURL)
-                    .padding(.vertical, 8)
+                CaptureQueueList(
+                    stitchQueue: stitchQueue,
+                    rollURL: capture.rollURL,
+                    canRescan: canRescan,
+                    onRescan: { entry in capture.beginRescan(rescanTarget(for: entry)) }
+                )
+                .padding(.vertical, 8)
             }
 
             discardButton
                 .padding(.horizontal)
                 .padding(.bottom, 8)
+        }
+        .sheet(isPresented: $isPickingRescanTarget) {
+            if let rollURL = capture.rollURL {
+                RescanPickerSheet(
+                    runner: capture.runner,
+                    rollURL: rollURL,
+                    captureFolder: capture.captureFolder,
+                    isPending: { negativeID in
+                        stitchQueue.hasPendingReplacement(rollNegativeID: negativeID, entryID: nil)
+                    },
+                    onPick: { target in capture.beginRescan(target) }
+                )
+            }
         }
         .confirmationDialog(
             "Discard unpublished captures?",
@@ -528,6 +547,7 @@ struct CaptureStageView: View {
                     }
                 )
             }
+            rescanBanner
             Text(sequenceHint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -557,6 +577,64 @@ struct CaptureStageView: View {
                 }
             }
         }
+    }
+
+    /// TETHER_PLAN §4.5: while a re-scan target is armed, say which negative
+    /// the operator should wind back to; otherwise offer to pick one.
+    @ViewBuilder
+    private var rescanBanner: some View {
+        if let target = capture.rescanTarget {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Re-scanning \(target.displayName)").font(.headline)
+                    Text("Wind the film back to it, then press Space. Esc cancels.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if capture.sequencePhase == .idle {
+                    Button("Cancel") { capture.cancelRescan() }
+                }
+            }
+            .padding(8)
+            .background(.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+        } else if capture.sequencePhase == .idle, capture.rollURL != nil {
+            Button("Re-scan a negative…") { isPickingRescanTarget = true }
+        }
+    }
+
+    private func canRescan(_ entry: StitchQueueModel.QueuedNegative) -> Bool {
+        capture.sequencePhase == .idle
+            && capture.rescanTarget == nil
+            && entry.step.isTerminal
+            && entry.step != .replaced
+            && !stitchQueue.hasPendingReplacement(
+                rollNegativeID: entry.negativeID, entryID: entry.id
+            )
+    }
+
+    private func rescanTarget(
+        for entry: StitchQueueModel.QueuedNegative
+    ) -> CaptureSessionModel.RescanTarget {
+        // A re-scan that failed is retried against the negative it was
+        // replacing, never against its own failed record: that would take
+        // over the failed record's provisional name and leave the original
+        // in the roll.
+        if let replacement = entry.replacement, entry.step != .published {
+            return CaptureSessionModel.RescanTarget(
+                displayName: replacement.displayName,
+                rollNegativeID: replacement.rollNegativeID,
+                queueEntryID: replacement.oldEntryID,
+                oldFramePaths: replacement.oldFramePaths
+            )
+        }
+        return CaptureSessionModel.RescanTarget(
+            displayName: entry.outputFilename ?? entry.stamp,
+            rollNegativeID: entry.negativeID,
+            queueEntryID: entry.id,
+            oldFramePaths: entry.framePaths
+        )
     }
 
     /// A mouse-reachable way to open or close focus assist: the F key needs
@@ -629,6 +707,8 @@ struct CaptureStageView: View {
         // Per TETHER_PLAN §3.2's key table: only list a key here when it
         // actually does something in this phase.
         switch capture.sequencePhase {
+        case .idle where capture.rescanTarget != nil:
+            return "Space or click Capture next negative to re-scan · F focus assist · Esc cancels"
         case .idle:
             return "Space or click Capture next negative · F focus assist"
         case .running:

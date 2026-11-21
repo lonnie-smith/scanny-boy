@@ -16,6 +16,16 @@ from scanny_boy.roll_manifest import RollManifest
 NOON = datetime.time(12, 0, 0)
 
 
+def _rank_time(negative) -> str | None:
+    """The time a negative ranks at: its sequence anchor when a re-scan took
+    over an earlier slot (`capture_time.sequence_datetime_original`),
+    otherwise the real capture time of its first frame."""
+    capture_time = negative.capture_time
+    return (
+        capture_time.sequence_datetime_original or capture_time.source_datetime_original
+    )
+
+
 def _sequenceable(manifest: RollManifest) -> list:
     """Every negative that can hold a position in the roll: actually
     published -- a `pending` or `failed` negative has no real capture time to
@@ -23,21 +33,19 @@ def _sequenceable(manifest: RollManifest) -> list:
     return [
         n
         for n in manifest.negatives
-        if n.status == "completed"
-        and n.capture_time.source_datetime_original is not None
+        if n.status == "completed" and _rank_time(n) is not None
     ]
 
 
 def _rank_key(run_index: dict[str, int], negative) -> tuple:
-    source_time = datetime.datetime.fromisoformat(
-        negative.capture_time.source_datetime_original
-    )
-    return (source_time, run_index[negative.run_id], negative.members[0])
+    rank_time = datetime.datetime.fromisoformat(_rank_time(negative))
+    return (rank_time, run_index[negative.run_id], negative.members[0])
 
 
 def sequence_negatives(manifest: RollManifest) -> list[str]:
     """Every published negative's `negative_id`, ordered by the real
-    capture time of its first member across every run, ascending. Ties
+    capture time of its first member across every run, ascending -- or by
+    its sequence anchor, when a re-scan took over an earlier slot. Ties
     break by run index (the order runs were appended in, i.e.
     `manifest.runs`' own order), then by first member's filename."""
     run_index = {run.run_id: i for i, run in enumerate(manifest.runs)}
@@ -65,9 +73,7 @@ def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
     `roll_capture_date` -- there is no date to apply until one is set.
     """
     roll_date_text = manifest.metadata.roll_capture_date
-    roll_date = (
-        datetime.date.fromisoformat(roll_date_text) if roll_date_text else None
-    )
+    roll_date = datetime.date.fromisoformat(roll_date_text) if roll_date_text else None
 
     by_id = {n.negative_id: n for n in manifest.negatives}
     times: dict[str, datetime.datetime] = {}

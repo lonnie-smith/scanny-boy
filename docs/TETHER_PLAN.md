@@ -489,9 +489,9 @@ Keys, active only when the Capture stage has focus and no text field does:
 
 | Key | Idle | During a sequence | Paused | Stopped |
 |---|---|---|---|---|
-| Space | Start the next negative | Pause after the in-flight shot | Resume (countdown first) | Resume from cell *k* (countdown first) |
+| Space | Start the next negative (the re-scan target's, when one is set, §4.5) | Pause after the in-flight shot | Resume (countdown first) | Resume from cell *k* (countdown first) |
 | Delete | — | — | Retake the last filled cell (replaces its file in place) | Retake the last filled cell |
-| Esc | — | Stop the negative | Stop the negative | — |
+| Esc | Cancel a pending re-scan target | Stop the negative | Stop the negative | — |
 
 Nothing in the app binds a plain Space today (checked: `AppKeyboard.swift` and
 every view's `keyboardShortcut`).
@@ -524,7 +524,7 @@ and once §6's analysis answers, a clipping and a focus badge.
 Below the grid, a list of this session's negatives, one row each: queued
 (with a progress bar and elapsed time for the active step), stitching (with
 the stitch's progress), published (the stitched TIFF thumbnail), or failed
-(the CLI's message, and Reshoot, §4.5).
+(the CLI's message, and Re-scan, §4.5).
 
 ---
 
@@ -763,7 +763,7 @@ never part of a capture session.
   and it can be prepared again or reshot.
 - **A negative that fails its check** never reaches the roll either. Its tile
   names the failed gate while the film is still at hand, and the next step is
-  Reshoot. The queue does not stitch it: that would only record the same
+  Re-scan. The queue does not stitch it: that would only record the same
   failure in the roll.
 - **A negative whose stitch fails** — having passed its check, that means the
   overlap check — is recorded `failed` with its reason (`stitch_pipeline` sets
@@ -784,11 +784,22 @@ never part of a capture session.
   retrying the stitch after each, and prepares those negatives again later.
   Only if nothing is left to delete does the tile ask the user to free space,
   quoting the CLI's figure.
-- **Reshoot** captures the negative again. New files are new sources, and
-  overlap is keyed by source SHA-256, so the reshoot publishes as a **new**
-  negative rather than adopting the failed one. When it publishes, the app
-  offers to delete the failed record with `edit delete`, which accepts a
-  negative of any status.
+- **Re-scan** captures a negative again and puts it back **in its own
+  slot**. Any negative can be the target: a session row (failed at prepare,
+  check or stitch, or published but unsatisfactory) or, through Re-scan a
+  negative…, any negative already in the roll. The operator picks the
+  target, winds the film back, and presses Space; one negative is captured
+  (never auto-advancing), and the capture after it is an ordinary one at the
+  end of the roll. New files are new sources, so the subset test never
+  matches; instead the queue's commit passes `stitch --replaces ID` (the
+  target has a roll record) or `--sequence-as FIRST_OLD_FRAME` (it failed
+  before reaching the roll). The new negative takes over the old one's
+  sequence position and output filename, keeps its metadata, and drops its
+  edits, which were fitted to the old pixels; auto-rotation and auto-crop
+  re-seed. Until it publishes, the old negative is untouched, and a failed
+  re-scan can itself be re-scanned. Once it publishes, the app moves the
+  old frames to the Trash — only those inside the capture folder — and
+  removes the old row's work folder. ARCHITECTURE.md §9.1 has the CLI side.
 - A negative can also simply be run again from Add Scans against its capture
   folder; that is today's overlap-and-replace path, unchanged.
 

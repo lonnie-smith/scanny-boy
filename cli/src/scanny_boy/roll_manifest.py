@@ -162,6 +162,12 @@ class CaptureTime:
     # offset (`±HH:MM`). Older rows lack both keys and read back as None.
     logged_datetime_original: str | None = None
     logged_offset: str | None = None
+    # The time this negative ranks at in the roll's sequence when it is not
+    # its own first frame's: a re-scan that took over an earlier negative in
+    # place (`stitch --replaces`, `--sequence-as`) keeps that negative's slot.
+    # Same camera-clock terms as `source_datetime_original`. Older rows lack
+    # the key and read back as None.
+    sequence_datetime_original: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
