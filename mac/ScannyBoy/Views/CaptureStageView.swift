@@ -617,7 +617,19 @@ struct CaptureStageView: View {
     private func rescanTarget(
         for entry: StitchQueueModel.QueuedNegative
     ) -> CaptureSessionModel.RescanTarget {
-        CaptureSessionModel.RescanTarget(
+        // A re-scan that failed is retried against the negative it was
+        // replacing, never against its own failed record: that would take
+        // over the failed record's provisional name and leave the original
+        // in the roll.
+        if let replacement = entry.replacement, entry.step != .published {
+            return CaptureSessionModel.RescanTarget(
+                displayName: replacement.displayName,
+                rollNegativeID: replacement.rollNegativeID,
+                queueEntryID: replacement.oldEntryID,
+                oldFramePaths: replacement.oldFramePaths
+            )
+        }
+        return CaptureSessionModel.RescanTarget(
             displayName: entry.outputFilename ?? entry.stamp,
             rollNegativeID: entry.negativeID,
             queueEntryID: entry.id,

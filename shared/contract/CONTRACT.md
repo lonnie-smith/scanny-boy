@@ -381,7 +381,9 @@ publishes it is pending under a provisional name of its own and the old
 negative is untouched, so a failed re-scan (`negative_failed`) leaves the old
 negative exactly as it was. An unknown `ID` is `REPLACE_TARGET_NOT_FOUND`.
 `--sequence-as FILE` is for a target that never reached the roll: the new
-negative ranks at FILE's `DateTimeOriginal` instead of its own. Both flags
+negative ranks at FILE's `DateTimeOriginal` instead of its own; a FILE with no
+readable capture time is a `MISSING_CAPTURE_TIME` warning, and the new
+negative then ranks at its own. Both flags
 are mutually exclusive with each other and with `--negatives` and
 `--compose-only`, and both run as a parallel commit under
 `--defer-roll-refresh`.

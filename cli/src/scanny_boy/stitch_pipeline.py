@@ -2051,9 +2051,16 @@ def run_stitch(
         if sequence_as is not None:
             rescan_anchor = _file_rank_time(sequence_as)
             if rescan_anchor is None:
-                raise StitchError(
-                    Code.WORK_MANIFEST_UNUSABLE,
-                    f"{sequence_as} has no readable capture time to rank by",
+                # Never a refusal: an old frame the decoder rejected is the
+                # likeliest reason to re-scan at all. The re-scan publishes
+                # and ranks at its own capture time instead.
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.MISSING_CAPTURE_TIME,
+                        message=f"{sequence_as} has no readable capture time; "
+                        "the re-scan is placed by its own capture time",
+                    )
                 )
 
     # 4. Every intermediate must be present and unchanged.
@@ -2953,6 +2960,7 @@ def _carry_over_target(record: NegativeRecord, target: NegativeRecord) -> None:
     record.capture_time.logged_datetime_original = old.logged_datetime_original
     record.capture_time.logged_offset = old.logged_offset
     record.capture_time.applied_datetime_original = old.applied_datetime_original
+    record.capture_time.intended_datetime_original = old.intended_datetime_original
 
 
 def _friendly_failure_message(
@@ -3655,6 +3663,12 @@ def _publish_negative(
                 previous_capture_time.logged_datetime_original
             )
             record.capture_time.logged_offset = previous_capture_time.logged_offset
+            # Kept even when never applied: the slot's intended time is the
+            # same, and Apply must still stamp it. `_maybe_reapply_metadata`
+            # overrides it with the applied time when there is one.
+            record.capture_time.intended_datetime_original = (
+                previous_capture_time.intended_datetime_original
+            )
 
         # A re-scan publishes under the name of the negative it takes over;
         # the record adopts that name only with the publish transaction.
@@ -3700,10 +3714,19 @@ def _publish_negative(
         replaced_backup: Path | None = None
         if entry.takes_over_name is not None and dest.exists():
             replaced_backup = staging_dir / ".replaced-original"
-            os.link(dest, replaced_backup)
+            try:
+                os.link(dest, replaced_backup)
+            except OSError:
+                # A volume without hard links (exFAT, FAT): copy instead.
+                shutil.copy2(dest, replaced_backup)
         staged_path.replace(dest)
-        size = dest.stat().st_size
-        digest = hashing.sha256_file(dest)
+        try:
+            size = dest.stat().st_size
+            digest = hashing.sha256_file(dest)
+        except BaseException:
+            if replaced_backup is not None:
+                os.replace(replaced_backup, dest)
+            raise
         record.expected_output = published_name
         record.output = {
             "name": published_name,
@@ -3757,10 +3780,14 @@ def _publish_negative(
                 removed=[old.negative_id for old in entry.covered_to_remove],
                 finish=finish_publish,
             )
-        except StitchError:
+        except BaseException as exc:
             # The TIFF is in place, but the record that would own it never
             # committed. Leave no stray file behind for a negative that is
             # new this run; the failure record is written by the caller.
+            # Only a StitchError ever did this for an ordinary negative; a
+            # re-scan restores the old file whatever went wrong.
+            if not isinstance(exc, StitchError) and entry.takes_over_name is None:
+                raise
             # A re-scan puts the old negative's file back and returns to its
             # provisional name, so its failure record claims nothing the old
             # negative still owns.
@@ -3776,6 +3803,15 @@ def _publish_negative(
                     old for old in entry.covered_to_remove if old not in roll.negatives
                 )
             raise
+        # A re-scan's replaced negative is gone from the roll now; its
+        # rendered preview goes too, best-effort, as `edit delete` does.
+        if entry.takes_over_name is not None:
+            for old in entry.covered_to_remove:
+                if old.preview_path:
+                    try:
+                        Path(old.preview_path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
         # Keep the working copy's lock stamps in step with the roll's.
         for name in ("film_base", "flat_field"):
             working_block = getattr(roll, name)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from scanny_boy import hashing, roll_sequence, stitch_pipeline
-from scanny_boy.events import Code, NegativeFailed
+from scanny_boy.events import Code, NegativeFailed, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.registration import StitchError
 from scanny_boy.roll_manifest import (
@@ -65,6 +65,7 @@ def _roll_with_target(work_dir, tmp_path, *, failed: bool = False):
         target.capture_time = CaptureTime(
             source_datetime_original=None if failed else TARGET_TIME,
             date_override="2026-07-30",
+            intended_datetime_original=None if failed else "2026-07-30T12:00:01",
             applied_datetime_original=None,
         )
         target.metadata.caption = "the harbour"
@@ -135,6 +136,8 @@ def test_a_rescan_takes_over_the_targets_slot_name_and_metadata(work_dir, tmp_pa
     assert new.metadata.caption == "the harbour"
     assert new.framelog_frame_uid == "frame-uid-7"
     assert new.capture_time.date_override == "2026-07-30"
+    # Never applied, but still intended: Apply must stamp the re-scan.
+    assert new.capture_time.intended_datetime_original == "2026-07-30T12:00:01"
     assert not [
         e for e in repo.edits_for(out_dir, new.negative_id) if e["op"] == "rotate"
     ]
@@ -195,27 +198,49 @@ def test_sequence_as_ranks_at_the_files_capture_time(work_dir, tmp_path):
     assert new.capture_time.sequence_datetime_original == "2026-08-02T12:33:41.450000"
 
 
-def test_an_unreadable_sequence_as_file_is_refused(work_dir, tmp_path):
+def test_an_unreadable_sequence_as_file_warns_and_still_publishes(work_dir, tmp_path):
     out_dir = make_roll_dir(tmp_path)
     junk = tmp_path / "junk.NEF"
     junk.write_bytes(b"not a raw file")
+    events: list = []
 
-    with pytest.raises(StitchError) as raised:
-        _rescan(work_dir, out_dir, sequence_as=junk)
+    outcome = _rescan(work_dir, out_dir, sequence_as=junk, events=events)
 
-    assert raised.value.code is Code.WORK_MANIFEST_UNUSABLE
+    assert outcome.status == "complete"
+    assert [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.MISSING_CAPTURE_TIME
+    ]
+    (new,) = load_roll_manifest(out_dir).negatives
+    assert new.capture_time.sequence_datetime_original is None
 
 
+def _no_hard_links(*args, **kwargs):
+    raise OSError(45, "Operation not supported")
+
+
+@pytest.mark.parametrize(
+    ("error", "hard_links"),
+    [
+        (StitchError(Code.FILM_BASE_CHANGED, "the references moved"), True),
+        (RuntimeError("database is locked"), True),
+        (StitchError(Code.FILM_BASE_CHANGED, "the references moved"), False),
+    ],
+    ids=["stitch-error", "other-error", "no-hard-links"],
+)
 def test_a_rolled_back_publish_leaves_the_target_untouched(
-    work_dir, tmp_path, monkeypatch
+    work_dir, tmp_path, monkeypatch, error, hard_links
 ):
     out_dir = _roll_with_target(work_dir, tmp_path)
     old_bytes = (out_dir / "IMG_00.tif").read_bytes()
 
     def refuse(*args, **kwargs):
-        raise StitchError(Code.FILM_BASE_CHANGED, "the references moved")
+        raise error
 
     monkeypatch.setattr(stitch_pipeline, "_lock_references", refuse)
+    if not hard_links:
+        monkeypatch.setattr(stitch_pipeline.os, "link", _no_hard_links)
     events: list = []
     outcome = _rescan(work_dir, out_dir, replaces="stitch-negative-01", events=events)
 
@@ -232,3 +257,15 @@ def test_a_rolled_back_publish_leaves_the_target_untouched(
     (failed,) = [n for n in roll.negatives if n.run_id == "rescan-run"]
     assert failed.status == "failed"
     assert failed.expected_output != "IMG_00.tif"
+
+
+def test_a_rescan_publishes_on_a_volume_without_hard_links(
+    work_dir, tmp_path, monkeypatch
+):
+    out_dir = _roll_with_target(work_dir, tmp_path)
+    monkeypatch.setattr(stitch_pipeline.os, "link", _no_hard_links)
+
+    outcome = _rescan(work_dir, out_dir, replaces="stitch-negative-01")
+
+    assert outcome.published == ["IMG_00.tif"]
+    assert not list(out_dir.glob(".*replaced-original*"))
