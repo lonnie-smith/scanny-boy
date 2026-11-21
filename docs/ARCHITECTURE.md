@@ -968,6 +968,21 @@ registered.
   (`roll_sequence._sequenceable`); `pending` and `failed` negatives are
   unsequenced. Since replacement is in place (§9), a re-scan of the same
   frames keeps the position its capture time dictates.
+- A **sequence anchor** (`capture_time.sequence_datetime_original`) ranks a
+  negative at another time than its own first frame's — the only exception
+  to capture-time order. Only a tethered re-scan sets it: `stitch --replaces
+  ID` publishes a new negative (new frames, so new sources the subset test
+  never matches) that takes over the old one's slot in the same publish
+  transaction — the old record (and its ops log) is removed, the new TIFF is
+  published under the old output name, and the old negative-level metadata,
+  place, Frame log link, date override and logged time carry over; `stitch
+  --sequence-as FILE` only anchors, for a target that never reached the roll.
+  The re-scan stays pending under a provisional name of its own until it
+  publishes, so a failed re-scan leaves the old negative untouched and never
+  claims a name recovery cleanup could delete; a rolled-back publish restores
+  the old TIFF from a hard link kept in the staging directory. The anchor
+  survives a later re-stitch. `stitch_pipeline._carry_over_target` and the
+  `takes_over_name` path of `_publish_negative` are the whole mechanism.
 - `sequence` is recomputed on **every** roll write, inside the transaction,
   from the fresh roll (`roll_manifest.stamp_derived_state`, shared by
   `repo.mutate_roll` and `repo.insert_roll`); the committed manifest is the
