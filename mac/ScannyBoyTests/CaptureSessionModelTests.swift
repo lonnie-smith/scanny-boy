@@ -576,6 +576,85 @@ struct CaptureSessionModelTests {
         #expect(model.sequencePhase == .idle)
     }
 
+    private static let rescanTarget = CaptureSessionModel.RescanTarget(
+        displayName: "_DSC4638.tif", rollNegativeID: "neg-3", queueEntryID: nil,
+        oldFramePaths: ["/tmp/old_01.NEF"])
+
+    @Test("a re-scan is refused while a negative is running")
+    func rescanRefusedWhileRunning() async throws {
+        let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)
+        model.intervalSeconds = 10
+        await model.connect()
+        model.handleSpace()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.sequencePhase == .running)
+        #expect(model.beginRescan(Self.rescanTarget) == false)
+        #expect(model.rescanTarget == nil)
+        model.handleSpace()
+    }
+
+    @Test("a re-scan target flows into the completed negative and is cleared")
+    func rescanTargetFlowsIntoCompletedNegative() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.autoAdvanceEnabled = false
+        await model.connect()
+        #expect(model.beginRescan(Self.rescanTarget) == true)
+        #expect(model.rescanTarget == Self.rescanTarget)
+        model.handleSpace()
+        try await Self.waitUntil(
+            { model.completedNegatives.count == 1 && model.sequencePhase == .idle },
+            timeout: .seconds(15)
+        )
+        #expect(model.completedNegatives[0].rescanTarget == Self.rescanTarget)
+        #expect(model.rescanTarget == nil)
+    }
+
+    @Test("a re-scan negative does not auto-advance")
+    func rescanNegativeDoesNotAutoAdvance() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        model.autoAdvanceEnabled = true
+        await model.connect()
+        #expect(model.beginRescan(Self.rescanTarget) == true)
+        model.handleSpace()
+        try await Self.waitUntil(
+            { model.completedNegatives.count == 1 && model.sequencePhase == .idle },
+            timeout: .seconds(15)
+        )
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(model.completedNegatives.count == 1)
+        #expect(model.sequencePhase == .idle)
+    }
+
+    @Test("Esc while idle cancels a pending re-scan")
+    func escapeCancelsRescan() async throws {
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        await model.connect()
+        #expect(model.beginRescan(Self.rescanTarget) == true)
+        model.handleEscape()
+        #expect(model.rescanTarget == nil)
+    }
+
+    @Test("switching rolls clears a pending re-scan")
+    func rollSwitchClearsRescan() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (model, _, _) = Self.makeModel(across: 1, down: 1)
+        model.rollURL = directory.appending(path: "roll-a", directoryHint: .isDirectory)
+        model.captureBaseFolder = directory
+        await model.connect()
+        #expect(model.beginRescan(Self.rescanTarget) == true)
+        model.rollURL = directory.appending(path: "roll-b", directoryHint: .isDirectory)
+        #expect(model.rescanTarget == nil)
+    }
+
     @Test("initial interval delays first release")
     func initialIntervalDelaysFirstRelease() async throws {
         let (model, _, _) = Self.makeModel(clock: ContinuousCaptureClock(), across: 1, down: 1)

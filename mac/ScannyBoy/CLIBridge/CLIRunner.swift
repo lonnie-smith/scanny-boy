@@ -790,6 +790,8 @@ public struct CLICommand: Sendable, Hashable {
         allowPartial: Bool = true,
         rig: String? = nil,
         deferRollRefresh: Bool = false,
+        replaces: String? = nil,
+        sequenceAs: URL? = nil,
         composeOnly: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
@@ -807,6 +809,12 @@ public struct CLICommand: Sendable, Hashable {
         }
         if deferRollRefresh {
             arguments.append("--defer-roll-refresh")
+        }
+        if let replaces {
+            arguments.append(contentsOf: ["--replaces", replaces])
+        }
+        if let sequenceAs {
+            arguments.append(contentsOf: ["--sequence-as", sequenceAs.path])
         }
         if composeOnly {
             arguments.append("--compose-only")

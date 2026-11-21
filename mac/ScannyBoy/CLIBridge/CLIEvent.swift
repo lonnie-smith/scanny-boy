@@ -91,7 +91,10 @@ public struct CLIEvent: Sendable, Hashable {
     /// (`framelog rolls`, `framelog roll` and `framelog apply`, all
     /// one-shot, the token in `SCANNY_BOY_FRAMELOG_TOKEN`) and its
     /// `framelog_rolls` and `framelog_roll` events.
-    public static let supportedProtocolVersion = 29
+    ///
+    /// Protocol 30 adds `stitch --replaces` / `--sequence-as` (a tethered
+    /// re-scan takes over an earlier negative's slot) and the REPLACE_* codes.
+    public static let supportedProtocolVersion = 30
 
     public let protocolVersion: Int
     public let kind: Kind
@@ -730,6 +733,8 @@ public enum CLICode: Sendable, Hashable {
     case libraryDBUnsupported
     case rollBusy
     case composeArtifactStale
+    case replaceTargetNotFound
+    case replaceRequiresSingleNegative
     case filmBaseChanged
     case rollRefreshPending
     case captureClipped
@@ -829,6 +834,8 @@ public enum CLICode: Sendable, Hashable {
         case "LIBRARY_DB_UNSUPPORTED": self = .libraryDBUnsupported
         case "ROLL_BUSY": self = .rollBusy
         case "COMPOSE_ARTIFACT_STALE": self = .composeArtifactStale
+        case "REPLACE_TARGET_NOT_FOUND": self = .replaceTargetNotFound
+        case "REPLACE_REQUIRES_SINGLE_NEGATIVE": self = .replaceRequiresSingleNegative
         case "FILM_BASE_CHANGED": self = .filmBaseChanged
         case "ROLL_REFRESH_PENDING": self = .rollRefreshPending
         case "CAPTURE_CLIPPED": self = .captureClipped
@@ -930,6 +937,8 @@ public enum CLICode: Sendable, Hashable {
         case .libraryDBUnsupported: "LIBRARY_DB_UNSUPPORTED"
         case .rollBusy: "ROLL_BUSY"
         case .composeArtifactStale: "COMPOSE_ARTIFACT_STALE"
+        case .replaceTargetNotFound: "REPLACE_TARGET_NOT_FOUND"
+        case .replaceRequiresSingleNegative: "REPLACE_REQUIRES_SINGLE_NEGATIVE"
         case .filmBaseChanged: "FILM_BASE_CHANGED"
         case .rollRefreshPending: "ROLL_REFRESH_PENDING"
         case .captureClipped: "CAPTURE_CLIPPED"
