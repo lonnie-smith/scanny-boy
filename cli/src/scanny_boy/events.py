@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 29
+PROTOCOL_VERSION = 30
 
 
 class EventType(enum.StrEnum):
@@ -143,6 +143,8 @@ class Code(enum.StrEnum):
     FRAMELOG_NOT_FOUND = "FRAMELOG_NOT_FOUND"
     FRAMELOG_RATE_LIMITED = "FRAMELOG_RATE_LIMITED"
     FRAMELOG_UNREACHABLE = "FRAMELOG_UNREACHABLE"
+    REPLACE_TARGET_NOT_FOUND = "REPLACE_TARGET_NOT_FOUND"
+    REPLACE_REQUIRES_SINGLE_NEGATIVE = "REPLACE_REQUIRES_SINGLE_NEGATIVE"
     FRAMELOG_BAD_RESPONSE = "FRAMELOG_BAD_RESPONSE"
     EXPORT_FAILED = "EXPORT_FAILED"
     # libjxl could not be reached through the process's symbol namespace. A

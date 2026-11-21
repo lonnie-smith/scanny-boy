@@ -22,8 +22,7 @@ def _rank_time(negative) -> str | None:
     otherwise the real capture time of its first frame."""
     capture_time = negative.capture_time
     return (
-        capture_time.sequence_datetime_original
-        or capture_time.source_datetime_original
+        capture_time.sequence_datetime_original or capture_time.source_datetime_original
     )
 
 
@@ -74,9 +73,7 @@ def intended_times(manifest: RollManifest) -> dict[str, datetime.datetime]:
     `roll_capture_date` -- there is no date to apply until one is set.
     """
     roll_date_text = manifest.metadata.roll_capture_date
-    roll_date = (
-        datetime.date.fromisoformat(roll_date_text) if roll_date_text else None
-    )
+    roll_date = datetime.date.fromisoformat(roll_date_text) if roll_date_text else None
 
     by_id = {n.negative_id: n for n in manifest.negatives}
     times: dict[str, datetime.datetime] = {}

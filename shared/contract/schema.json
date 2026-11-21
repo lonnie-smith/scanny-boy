@@ -134,6 +134,8 @@
         "FRAMELOG_NOT_FOUND",
         "FRAMELOG_RATE_LIMITED",
         "FRAMELOG_UNREACHABLE",
+        "REPLACE_TARGET_NOT_FOUND",
+        "REPLACE_REQUIRES_SINGLE_NEGATIVE",
         "FRAMELOG_BAD_RESPONSE",
         "EXPORT_FAILED",
         "JXL_ENCODER_UNAVAILABLE",
@@ -328,7 +330,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 29
+      "const": 30
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
