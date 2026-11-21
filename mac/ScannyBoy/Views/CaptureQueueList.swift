@@ -8,6 +8,10 @@ struct CaptureQueueList: View {
     let stitchQueue: StitchQueueModel
     /// The roll being captured; the queue holds other rolls' entries too.
     let rollURL: URL?
+    /// Whether a row may be re-scanned now (TETHER_PLAN §4.5), and what to
+    /// do when it is. Nil hides the action.
+    var canRescan: (StitchQueueModel.QueuedNegative) -> Bool = { _ in false }
+    var onRescan: ((StitchQueueModel.QueuedNegative) -> Void)?
 
     var body: some View {
         // Rows are a fixed height; the list scrolls past `maxVisibleRows`
@@ -18,7 +22,10 @@ struct CaptureQueueList: View {
                     CaptureQueueRow(
                         negative: negative,
                         progress: stitchQueue.progress[negative.id],
-                        rollURL: rollURL
+                        rollURL: rollURL,
+                        isBeingReplaced: isBeingReplaced(negative),
+                        canRescan: onRescan != nil && canRescan(negative),
+                        onRescan: { onRescan?(negative) }
                     )
                 }
             }
@@ -26,6 +33,14 @@ struct CaptureQueueList: View {
         .frame(
             height: CGFloat(min(negatives.count, Self.maxVisibleRows)) * CaptureQueueRow.rowHeight
         )
+    }
+
+    /// A later row is a re-scan of this one and has not finished yet.
+    private func isBeingReplaced(_ negative: StitchQueueModel.QueuedNegative) -> Bool {
+        negative.step != .replaced
+            && stitchQueue.hasPendingReplacement(
+                rollNegativeID: negative.negativeID, entryID: negative.id
+            )
     }
 
     /// Newest first — the negative just shot is at the top.
@@ -41,6 +56,9 @@ struct CaptureQueueRow: View {
     let negative: StitchQueueModel.QueuedNegative
     let progress: StitchQueueModel.StepProgress?
     let rollURL: URL?
+    var isBeingReplaced = false
+    var canRescan = false
+    var onRescan: () -> Void = {}
 
     @State private var thumbnail: Thumbnail?
 
@@ -48,10 +66,16 @@ struct CaptureQueueRow: View {
         HStack(spacing: 8) {
             leadingIcon
                 .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
-            Text(negative.stamp)
-                .font(.caption.monospacedDigit())
-                .fixedSize()
-                .frame(minWidth: 110, alignment: .leading)
+            HStack(spacing: 3) {
+                if negative.replacement != nil {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.secondary)
+                }
+                Text(negative.stamp)
+                    .font(.caption.monospacedDigit())
+            }
+            .fixedSize()
+            .frame(minWidth: 110, alignment: .leading)
             statusLabel
                 .font(.caption)
                 .lineLimit(1)
@@ -61,6 +85,10 @@ struct CaptureQueueRow: View {
                     .frame(width: 80)
             }
             Spacer()
+            if canRescan, failedRow {
+                Button("Re-scan", action: onRescan)
+                    .controlSize(.small)
+            }
             trailingLabel
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -70,6 +98,11 @@ struct CaptureQueueRow: View {
         .frame(height: Self.rowHeight)
         .opacity(failedRow ? 0.7 : 1.0)
         .help(helpText)
+        .contextMenu {
+            if canRescan {
+                Button("Re-scan This Negative", action: onRescan)
+            }
+        }
         .task(id: negative.outputFilename) {
             await loadThumbnail()
         }
@@ -99,6 +132,7 @@ struct CaptureQueueRow: View {
         case .published: "checkmark.circle.fill"
         case .preparing, .checking, .composing, .stitching: "gearshape.fill"
         case .prepareFailed, .checkFailed, .stitchFailed: "xmark.octagon.fill"
+        case .replaced: "arrow.triangle.2.circlepath"
         case .waitingForDisk: "externaldrive.badge.exclamationmark"
         case .waitingPrepare, .waitingCheck, .waitingStitch, .waitingCommit: "clock.fill"
         }
@@ -117,14 +151,16 @@ struct CaptureQueueRow: View {
     // MARK: - Status text
 
     private var statusLabel: some View {
-        Text(Self.statusText(for: negative, progress: progress))
+        Text(Self.statusText(for: negative, progress: progress, isBeingReplaced: isBeingReplaced))
     }
 
     static func statusText(
         for negative: StitchQueueModel.QueuedNegative,
-        progress: StitchQueueModel.StepProgress?
+        progress: StitchQueueModel.StepProgress?,
+        isBeingReplaced: Bool = false
     ) -> String {
         let stepName: String
+        if isBeingReplaced { return "Being replaced by a re-scan" }
         switch negative.step {
         case .waitingPrepare: return "Waiting to prepare"
         case .preparing:
@@ -138,7 +174,12 @@ struct CaptureQueueRow: View {
         case .waitingCommit: return "Waiting to publish"
         case .stitching:
             stepName = "Publishing"
-        case .published: return "Published"
+        case .published:
+            if let replacement = negative.replacement {
+                return "Published in place of \(replacement.displayName)"
+            }
+            return "Published"
+        case .replaced: return "Replaced by a re-scan"
         case .prepareFailed:
             return "Prepare failed — \(negative.failureMessage ?? "unknown")"
         case .checkFailed:

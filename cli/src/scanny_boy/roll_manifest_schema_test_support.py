@@ -58,9 +58,10 @@ def empty_v5_manifest(
             "iso": None,
             "city": None,
             "state": None,
-            "camera": None,
             "lens": None,
             "caption": None,
+            "framelog_roll_uid": None,
+            "framelog_roll_number": None,
         },
     }
 
@@ -102,6 +103,7 @@ def _assert_matches_v5_roll_manifest_schema(
         assert negative["status"] in defs["negativeStatus"]["enum"]
         assert len(negative["members"]) >= 1
         _require_keys(negative["capture_time"], defs["captureTime"]["required"])
+        _require_keys(negative["place"], defs["negativePlace"]["required"])
         if negative["output"] is not None:
             _require_keys(negative["output"], defs["output"]["required"])
             assert re.match(sha256_pattern, negative["output"]["sha256"])

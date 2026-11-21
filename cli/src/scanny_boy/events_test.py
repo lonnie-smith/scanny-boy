@@ -13,6 +13,8 @@ from scanny_boy.events import (
     Finished,
     FlatFieldReferenceSet,
     FrameAnalyzed,
+    FramelogRoll,
+    FramelogRolls,
     GridCreated,
     GridDeleted,
     GridList,
@@ -308,7 +310,7 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 28
+    assert PROTOCOL_VERSION == 30
 
 
 def test_metadata_values_film_kinds_only_serialised_when_present():
@@ -331,6 +333,13 @@ def test_new_event_kinds_round_trip():
         MetadataApplied(negative_id="neg-1"),
         MetadataUpdated(manifest={"manifest_kind": "roll"}),
         MetadataValues(field="city", values=["Porto", "Lisbon"]),
+        FramelogRolls(rolls=[{"uid": "k3j9x0a1bc", "roll_number": 42}]),
+        FramelogRoll(
+            roll={"uid": "k3j9x0a1bc"},
+            frames=[],
+            alignment=[{"negative_id": "n-1", "frame_number": None}],
+            linked=False,
+        ),
         MetadataSkipped(
             negative_id="neg-2",
             code=Code.METADATA_WRITE_FAILED,

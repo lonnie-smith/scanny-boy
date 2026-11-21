@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **28**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **30**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -227,7 +227,8 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
                       [--jobs N] [--overwrite] [--rig ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ... | --compose-only] [--rig ID]
+                      [--negatives ID ... | --compose-only
+                       | --replaces ID | --sequence-as FILE] [--rig ID]
                       [--no-auto-rotate] [--no-auto-crop] [--defer-roll-refresh]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
@@ -239,6 +240,10 @@ scanny-boy apply-metadata --roll DIR
 
 scanny-boy metadata set    --roll DIR --payload JSON
 scanny-boy metadata values --field FIELD
+
+scanny-boy framelog rolls [--status all|active|finished] [--base-url URL]
+scanny-boy framelog roll  --roll DIR --ref UID|NUMBER [--base-url URL]
+scanny-boy framelog apply --roll DIR --ref UID --assignments JSON [--base-url URL]
 
 scanny-boy edit rotate --roll DIR --negative ID [ID ...] --direction cw|ccw
 scanny-boy edit flip   --roll DIR --negative ID [ID ...]
@@ -358,6 +363,30 @@ artifact emits a `COMPOSE_ARTIFACT_STALE` warning and the stitch recomputes
 that group in full: an artifact only ever saves time, never changes a
 result. A stitch removes a group's artifact once the group is published or
 its failure recorded.
+
+**Re-scanning a negative in place** (`--replaces ID`, `--sequence-as FILE`).
+A tethered re-scan is a work folder holding exactly one negative (more is
+`REPLACE_REQUIRES_SINGLE_NEGATIVE`). With `--replaces ID` the new negative
+takes over the named negative's slot when it publishes: in the same publish
+transaction the old record is removed (its edits ops log with it), the new
+TIFF is published under the old record's output filename (its published name,
+or its expected one when it never published), and the new record carries the
+old one's negative-level metadata, place, Frame log link, date override and
+logged time. Its `capture_time.sequence_datetime_original` is set to the old
+negative's rank time, so it holds the old position in the roll's sequence,
+and when the old negative's capture time had been applied the new TIFF gets
+the same applied time. The new negative has a new `negative_id`, and like any
+new negative it is seeded with auto-rotation and auto-crop. Until it
+publishes it is pending under a provisional name of its own and the old
+negative is untouched, so a failed re-scan (`negative_failed`) leaves the old
+negative exactly as it was. An unknown `ID` is `REPLACE_TARGET_NOT_FOUND`.
+`--sequence-as FILE` is for a target that never reached the roll: the new
+negative ranks at FILE's `DateTimeOriginal` instead of its own; a FILE with no
+readable capture time is a `MISSING_CAPTURE_TIME` warning, and the new
+negative then ranks at its own. Both flags
+are mutually exclusive with each other and with `--negatives` and
+`--compose-only`, and both run as a parallel commit under
+`--defer-roll-refresh`.
 
 **Parallel commits and the locks.** Every command that writes a roll takes
 the roll lock exclusively, so only one runs at a time; `ROLL_BUSY` is the
@@ -527,11 +556,14 @@ published TIFFs. See Phase 3 section 3.8.
 `metadata set` applies one metadata payload to the roll's record in the
 library database — it never touches a TIFF. The payload is
 `{"roll": {field: value}, "negatives": {negative_id: {field: value}}}`:
-roll fields are `capture_date` (the roll capture date), `film`, `iso`
-(roll-only — no negative columns, no per-image override), plus `city`,
-`state`, `camera`, `lens`, `caption`; negative fields are the same five
-shared extended-metadata fields plus `capture_date` (the negative's date
-override). A key that is absent leaves the field untouched; a key present
+roll fields are `capture_date` (the roll capture date), `film`, `iso`,
+`camera` (roll-only — no negative columns, no per-image override), plus
+`city`, `state`, `lens`, `caption`; negative fields are the four shared
+extended-metadata fields (`city`, `state`, `lens`, `caption`) plus
+`capture_date` (the negative's date override). A negative payload carrying
+`film`, `iso` or `camera` fails with `INVALID_METADATA` as an unknown field
+(migration 0021 dropped the per-negative camera, promoting the most common
+value onto a roll that had none). A key that is absent leaves the field untouched; a key present
 with `null` or `""` clears it (a cleared negative field then inherits the
 roll-level fallback; the extended metadata uses live-fallback semantics,
 never copying roll values onto negatives). Every capture-date change
@@ -546,6 +578,25 @@ malformed payload, `ROLL_NOT_FOUND` for an unregistered roll, and
 `NEGATIVE_NOT_FOUND` for an unknown negative id — the whole payload is
 validated before anything is written.
 
+The Frame log import adds keys (docs/METADATA_IMPORT_PLAN.md section 4).
+Roll: `framelog_roll_uid` (10 characters of `[0-9a-z]`) and
+`framelog_roll_number` (an integer >= 1; a boolean is rejected). Negative:
+`framelog_frame_uid` (same shape as the roll uid), `latitude` (-90..90),
+`longitude` (-180..180), `gps_accuracy_m` (>= 0), `location_name` and
+`address` (at most 500 characters), `logged_time` (`YYYY-MM-DDTHH:MM:SS`,
+stored as `capture_time.logged_datetime_original`) and `logged_offset`
+(`+HH:MM` or `-HH:MM`, stored as `capture_time.logged_offset`). They follow
+the same absent/`null`/`""` rules and none feeds the metadata-values
+catalog. Cross-field rules are checked on the merged result and fail the
+whole payload with `INVALID_METADATA`: `latitude` and `longitude` are both
+set or both null, and `logged_offset` requires `logged_time`. Setting a
+negative's `capture_date` also clears its `logged_time` and `logged_offset`,
+and setting `logged_time` also clears its `capture_date`, unless the same
+payload sets the other side. A payload carrying `logged_time` without
+`logged_offset` clears the stored offset. A negative with a logged time uses it as its
+intended capture time, takes no rank on its date, and gets one even when the
+roll has no capture date.
+
 `metadata values` lists the catalog of previously-entered values for one
 field (`film`, `iso`, `city`, `state`, `camera`, or `lens`), most-recently-used first, as
 a `metadata_values` event. It fails with `INVALID_METADATA` for any other
@@ -559,6 +610,24 @@ mapping each returned stock that has a kind to it, so the app can set the
 roll's film kind when a stock is picked. `film_kinds` is omitted for every
 other field; the catalog never overwrites a stored kind when a value is
 used again.
+
+`framelog` reads roll and frame metadata from the Frame log export API
+(`<base-url>/api/framelogger/export/v1`, default base URL
+`https://lonnie-smith.com`); see `docs/METADATA_IMPORT_PLAN.md`. Every
+`framelog` command reads its bearer token from the `SCANNY_BOY_FRAMELOG_TOKEN`
+environment variable (never argv), runs one-shot (never through `serve`), and
+fails with one of the `FRAMELOG_*` codes on a transport or API failure.
+`framelog rolls` emits one `framelog_rolls` event. `framelog roll` fetches one
+roll by uid or roll number and emits one `framelog_roll` event carrying the
+roll, its frames' display fields, and a default `alignment` of the `--roll`
+roll's sequenced negatives to frame numbers. `framelog apply` validates
+`--assignments` (`{negative_id: frame_number | null}`; numbers in
+`1..last_frame`, strictly increasing in sequence order), re-fetches the roll,
+maps every assigned frame to `metadata set` keys, writes them as one atomic
+`metadata set` payload (imported values overwrite; absent source values leave
+fields untouched), and emits `metadata_updated`. It fails with
+`NEGATIVE_NOT_FOUND` for an unknown negative and `INVALID_METADATA` for an
+out-of-range or non-monotonic assignment.
 
 `edit rotate` records a 90-degree rotation of one or more negatives —
 `cw` clockwise,
@@ -583,7 +652,8 @@ or fails without partial effects.
 
 `edit render-region` renders one display-space region of a negative's
 published TIFF at 1:1 — the ops log's net transform (rotation, flip, and
-the auto-seeded fine angle) folded in, the 8-bit display encode `--mode`
+the auto-seeded fine angle, plus the live crop and any spot, scratch, or band
+repair) folded in, the 8-bit display encode `--mode`
 names (protocol 11): `"positive"` — the default — is the inverted look the
 cached preview holds, with the tone adjustment composed in; `"negative"`
 is the un-inverted density view, which no tone reaches — no
@@ -944,6 +1014,8 @@ requests as cancelled, lets the in-flight request finish, and exits 0.
 | `metadata_applied` | A published TIFF's capture time was written. Carries `negative_id`. |
 | `metadata_skipped` | A dirty negative was not rewritten. Carries `negative_id`, `code`, and `message`. |
 | `metadata_updated` | A `metadata set` payload was applied. Carries `manifest` (the updated roll manifest). |
+| `framelog_rolls` | The answer to `framelog rolls`. Carries `rolls`: `{uid, roll_number, film, camera, iso, created_at, finished_at, frame_count, last_frame, first_captured_at, last_captured_at}` each. Carries no `run_id`. |
+| `framelog_roll` | The answer to `framelog roll`. Carries `roll` (`{uid, roll_number, film, camera, iso, created_at, finished_at, frame_count, last_frame, missing_frame_numbers}`), `frames` (`{uid, frame_number, captured_local, precision, offset, lens, caption, location_name, address, city, state, has_position}` each, in frame order), `alignment` (`{negative_id, frame_number}` per sequenced negative, in sequence order; `frame_number` null for no match) and `linked` (the roll is already linked to this Frame log roll). Carries no `run_id`. |
 | `metadata_values` | The catalog answer to `metadata values`. Carries `field` and `values` (most-recently-used first), plus `film_kinds` (stock name to `colour`/`monochrome`) when `field` is `film`. |
 | `crop_suggested` | The answer to `edit suggest-crop`. Carries `negative_id`, `rect` (`{x, y, width, height}` on the full uncropped display canvas, or `null` exactly when `refused` is set), `canvas_width`, `canvas_height`, `preset` (the ratio fitted, or `null` when unconstrained) and `refused` (a refusal token or `null`). Carries no `run_id`. |
 | `edit_recorded` | A rotate or flip op was recorded for one negative. Carries `negative_id`, `edit`, `rotation_quarter_turns`, `flipped_horizontally`, `fine_rotation_deg`, the net `crop` report (`{width, height, tilt_deg, preset}` plus an optional `source: "auto"`, or `null`), and `preview_path`. |
@@ -1074,6 +1146,14 @@ staging directories, and reruns the incomplete negative.
 | `ORPHAN_FILE_NOT_REMOVED` | Warning: a removed covered negative's TIFF could not be deleted |
 | `NEGATIVE_NOT_FOUND` | The named `negative_id` does not exist, or has not been stitched |
 | `INVALID_EDIT` | An `edit` subcommand got a direction or argument it does not accept |
+| `FRAMELOG_NO_TOKEN` | `SCANNY_BOY_FRAMELOG_TOKEN` is unset or empty |
+| `FRAMELOG_UNAUTHORIZED` | The Frame log API answered 401 or 403 (token missing, bad, or revoked) |
+| `FRAMELOG_NOT_FOUND` | The Frame log API answered 404 (no such roll) |
+| `FRAMELOG_RATE_LIMITED` | The Frame log API answered 429; the message names `Retry-After` when given |
+| `FRAMELOG_UNREACHABLE` | DNS, connection, TLS, or timeout failure reaching the Frame log API |
+| `REPLACE_TARGET_NOT_FOUND` | `stitch --replaces` named a `negative_id` the roll does not hold |
+| `REPLACE_REQUIRES_SINGLE_NEGATIVE` | `stitch --replaces` / `--sequence-as` was given a work folder with more than one negative |
+| `FRAMELOG_BAD_RESPONSE` | Any other HTTP status, a non-JSON body, a missing required field, or `apiVersion` other than 1 |
 | `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
 | `JXL_ENCODER_UNAVAILABLE` | libjxl could not be reached from the export process — a packaging failure, not a user error; the whole export stops |

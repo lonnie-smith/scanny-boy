@@ -65,6 +65,33 @@ final class CaptureSessionModel {
         let stamp: String
         let frameURLs: [URL]
         let startedAt: Date
+        /// The earlier negative this capture re-scans, when it does: on
+        /// publish it takes over that negative's sequence slot and output
+        /// name.
+        var rescanTarget: RescanTarget?
+
+        init(
+            id: UUID, stamp: String, frameURLs: [URL], startedAt: Date,
+            rescanTarget: RescanTarget? = nil
+        ) {
+            self.id = id
+            self.stamp = stamp
+            self.frameURLs = frameURLs
+            self.startedAt = startedAt
+            self.rescanTarget = rescanTarget
+        }
+    }
+
+    /// The earlier negative the operator chose to re-scan. Exactly one of
+    /// `rollNegativeID` (already published in the roll) and `queueEntryID`
+    /// (still a row in this session's stitch queue) is normally set.
+    struct RescanTarget: Sendable, Equatable, Codable {
+        /// The old output filename, or the capture stamp when it has none.
+        var displayName: String
+        var rollNegativeID: String?
+        var queueEntryID: UUID?
+        /// The old negative's NEFs, trashed once the re-scan publishes.
+        var oldFramePaths: [String]
     }
 
     /// A frame found in the camera buffer before a release (§2.5). It is
@@ -148,6 +175,10 @@ final class CaptureSessionModel {
     private(set) var sequencePhase: CaptureSequencePhase = .idle
     private(set) var countdownText = ""
     private(set) var completedNegatives: [CompletedNegative] = []
+    /// The negative the next (or current) capture re-scans, if any.
+    private(set) var rescanTarget: RescanTarget?
+    /// `rescanTarget` as it stood when the open negative started.
+    private var activeRescanTarget: RescanTarget?
     private(set) var isSessionOpen = false
     private(set) var isShootingBaseFrame = false
     private(set) var baseFrameError: ConfigurationModel.Issue?
@@ -398,6 +429,10 @@ final class CaptureSessionModel {
         } else {
             negativeFirstRelease = nil
             sequencePhase = .idle
+            // An open negative keeps its re-scan target through the drop, so
+            // a resume still takes over the old slot; an armed target with
+            // nothing captured yet is dropped with the session.
+            cancelRescan()
         }
         focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
@@ -427,6 +462,10 @@ final class CaptureSessionModel {
     /// already `.stopped` — that Esc is spent, the operator resumes or
     /// discards instead.
     func handleEscape() {
+        if sequencePhase == .idle, rescanTarget != nil {
+            cancelRescan()
+            return
+        }
         guard sequencePhase == .running || sequencePhase == .paused else { return }
         stopNegative()
     }
@@ -506,8 +545,25 @@ final class CaptureSessionModel {
         }
     }
 
+    /// Arms a re-scan: the next negative captured takes over `target`'s slot.
+    /// Refused while any negative is open or leftovers await a choice.
+    @discardableResult
+    func beginRescan(_ target: RescanTarget) -> Bool {
+        guard sequencePhase == .idle, negativeFirstRelease == nil,
+            !hasUnresolvedLeftovers
+        else { return false }
+        rescanTarget = target
+        return true
+    }
+
+    func cancelRescan() {
+        rescanTarget = nil
+        activeRescanTarget = nil
+    }
+
     private func startNegative() {
         guard let count = perNegative else { return }
+        activeRescanTarget = rescanTarget
         resetCells()
         for index in 0..<count {
             cellStates[index] = index == 0 ? .next : .empty
@@ -621,6 +677,7 @@ final class CaptureSessionModel {
         finishNegative(
             firstRelease: firstRelease,
             advancing: autoAdvanceActive && sequencePhase == .running
+                && activeRescanTarget == nil
         )
     }
 
@@ -637,8 +694,11 @@ final class CaptureSessionModel {
         // must track whichever stamp the frames actually landed under.
         let stamp = Self.stamp(fromFirstFrame: frames.first, firstRelease: firstRelease)
         completedNegatives.append(
-            CompletedNegative(id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease)
+            CompletedNegative(
+                id: UUID(), stamp: stamp, frameURLs: frames, startedAt: firstRelease,
+                rescanTarget: activeRescanTarget)
         )
+        cancelRescan()
         if baselineFrameURLs.isEmpty {
             baselineFrameURLs = frames
         }
@@ -797,6 +857,7 @@ final class CaptureSessionModel {
             NSWorkspace.shared.recycle(urls) { _, _ in }
         }
         negativeFirstRelease = nil
+        cancelRescan()
         sequencePhase = .idle
         focusAssist.updateSequencePhase(sequencePhase)
         countdownText = ""
@@ -965,6 +1026,7 @@ final class CaptureSessionModel {
     /// unpublished captures" on the new roll.
     private func resetForRollSwitch() {
         guard sequencePhase == .idle else { return }
+        cancelRescan()
         completedNegatives = []
         baselineFrameURLs = []
         currentNegativeIndex = 0

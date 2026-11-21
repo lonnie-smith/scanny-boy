@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import tifffile
 
 from scanny_boy import color, deband, previews, render, scratches, spots
+from scanny_boy import heal as heal_ops
 from scanny_boy.events import Code, WarningEvent
 from scanny_boy.library import repo
 from scanny_boy.library.repo import RollNotRegisteredError
@@ -771,6 +772,7 @@ def run_edit_render_region(
             metering=meter,
             destination=output_path,
             mode=mode,
+            heal=heal_ops.HealParams.from_state(state),
             crop_params=state.crop,
             matrix=matrix,
         )
@@ -836,6 +838,7 @@ def run_edit_render_preview(
             fine_angle_deg=state.fine_angle_deg,
             mode=mode,
             tone_params=state.tone,
+            heal=heal_ops.HealParams.from_state(state),
             crop_params=live_crop,
             color_params=state.color,
             metering=meter,

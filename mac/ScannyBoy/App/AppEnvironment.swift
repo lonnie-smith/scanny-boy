@@ -69,6 +69,22 @@ enum AppEnvironment {
         return suite
     }()
 
+    /// Where the Frame log token is kept for this profile: the Keychain
+    /// under the installed app's service name (with a `.dev` suffix in
+    /// development), or a process-local store under test.
+    static let frameLogTokenStore: any FrameLogTokenStore = {
+        () -> any FrameLogTokenStore in
+        switch profile {
+        case .production:
+            return KeychainFrameLogTokenStore(service: FrameLogCredentials.productionService)
+        case .development:
+            return KeychainFrameLogTokenStore(
+                service: FrameLogCredentials.productionService + ".dev")
+        case .test:
+            return InMemoryFrameLogTokenStore()
+        }
+    }()
+
     /// `~/Library/Application Support/ScannyBoy` (`ScannyBoy-Dev` in
     /// development), or a fresh temp directory under test.
     static let supportDirectory: URL = {

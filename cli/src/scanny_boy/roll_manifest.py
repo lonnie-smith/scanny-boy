@@ -50,9 +50,10 @@ ROLL_MANIFEST_KIND = "roll"
 # The extended metadata fields, in display order. Every one lives on both
 # `RollMetadata` (the roll-level fallback) and `NegativeMetadata` (the
 # explicit per-image value); `effective_metadata` resolves the pair.
-METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
+METADATA_FIELDS = ("city", "state", "lens", "caption")
 # Roll-only extended metadata: no negative columns, no per-image override.
-ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
+# A roll is shot on one body, so `camera` has no per-negative value.
+ROLL_ONLY_METADATA_FIELDS = ("film", "iso", "camera")
 
 # `short_id` starts at six characters of the run's UUID and lengthens until
 # it is free within the roll.
@@ -157,9 +158,24 @@ class CaptureTime:
     intended_datetime_original: str | None = None
     applied_datetime_original: str | None = None
     date_override: str | None = None
+    # Frame log's logged local wall time (`YYYY-MM-DDTHH:MM:SS`) and UTC
+    # offset (`±HH:MM`). Older rows lack both keys and read back as None.
+    logged_datetime_original: str | None = None
+    logged_offset: str | None = None
+    # The time this negative ranks at in the roll's sequence when it is not
+    # its own first frame's: a re-scan that took over an earlier negative in
+    # place (`stitch --replaces`, `--sequence-as`) keeps that negative's slot.
+    # Same camera-clock terms as `source_datetime_original`. Older rows lack
+    # the key and read back as None.
+    sequence_datetime_original: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaptureTime:
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
 
 
 @dataclasses.dataclass
@@ -206,16 +222,38 @@ class NegativeMetadata:
     fallback" — the effective value is the negative's own, else the roll's.
     Serialized as the negative's nested `metadata` object; every key is
     required-nullable in `roll-manifest.schema.json`, so rows written before
-    the feature existed (which carry five NULLs) read back unchanged."""
+    the feature existed (which carry NULLs) read back unchanged. `camera` is
+    roll-only and has no field here."""
 
     city: str | None = None
     state: str | None = None
-    camera: str | None = None
     lens: str | None = None
     caption: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class NegativePlace:
+    """Where a negative was shot, as imported from the Frame log. Belongs to
+    the negative only: it has no roll-level fallback, so it is not part of
+    `NegativeMetadata`."""
+
+    latitude: float | None = None
+    longitude: float | None = None
+    gps_accuracy_m: float | None = None
+    location_name: str | None = None
+    address: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> NegativePlace:
+        data = data or {}
+        names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in names})
 
 
 @dataclasses.dataclass
@@ -233,6 +271,9 @@ class NegativeRecord:
     # The negative's explicit extended-metadata values (None = inherit the
     # roll's fallback).
     metadata: NegativeMetadata = dataclasses.field(default_factory=NegativeMetadata)
+    # The linked Frame log frame's uid, and the frame's place.
+    framelog_frame_uid: str | None = None
+    place: NegativePlace = dataclasses.field(default_factory=NegativePlace)
     # `{name, size, sha256, width, height}`; a plain dict rather than a
     # dataclass because Phase 1's `OutputRecord` has no dimensions and this
     # module's dataclass list is fixed by the plan.
@@ -314,6 +355,8 @@ class NegativeRecord:
             "error_message": self.error_message,
             "capture_time": self.capture_time.to_dict(),
             "metadata": self.metadata.to_dict(),
+            "framelog_frame_uid": self.framelog_frame_uid,
+            "place": self.place.to_dict(),
             "preview_path": self.preview_path,
             "grid": self.grid,
             "grid_cells": self.grid_cells,
@@ -326,8 +369,9 @@ class NegativeRecord:
 class RollMetadata:
     """The roll's metadata stage record. `roll_capture_date` is the
     fallback date every negative without a `date_override` ranks on; the
-    five extended-metadata fields are the roll-level fallbacks each
-    negative without its own value inherits."""
+    extended-metadata fields are the roll-level fallbacks each negative
+    without its own value inherits (`film`, `iso` and `camera` are
+    roll-only: no negative overrides them)."""
 
     roll_capture_date: str | None = None
     last_applied_at: str | None = None
@@ -338,6 +382,9 @@ class RollMetadata:
     camera: str | None = None
     lens: str | None = None
     caption: str | None = None
+    # The linked Frame log roll (docs/METADATA_IMPORT_PLAN.md section 4.2).
+    framelog_roll_uid: str | None = None
+    framelog_roll_number: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -350,14 +397,26 @@ def effective_metadata(
     explicit value when it has one, else the roll's. Nothing is copied
     between rows — changing a roll-level value instantly covers every
     negative without an explicit one, and a negative added later inherits
-    the roll's values without a write."""
-    result = {
-        field: getattr(negative_metadata, field) or getattr(roll_metadata, field)
-        for field in METADATA_FIELDS
-    }
+    the roll's values without a write. A negative's value that is `None`,
+    empty or whitespace-only is not an override. The roll-only fields
+    (`film`, `iso`, `camera`) always come from the roll."""
+    result: dict[str, str | None] = {}
+    for field in METADATA_FIELDS:
+        # A blank or whitespace-only override is "not defined": it falls
+        # back to the roll's value.
+        result[field] = _present(getattr(negative_metadata, field)) or _present(
+            getattr(roll_metadata, field)
+        )
     for field in ROLL_ONLY_METADATA_FIELDS:
-        result[field] = getattr(roll_metadata, field)
+        result[field] = _present(getattr(roll_metadata, field))
     return result
+
+
+def _present(value: str | None) -> str | None:
+    """The stripped value, or `None` when it is missing or blank."""
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 @dataclasses.dataclass(frozen=True)

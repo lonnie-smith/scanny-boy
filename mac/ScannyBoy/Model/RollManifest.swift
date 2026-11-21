@@ -200,18 +200,19 @@ struct RollManifest: Sendable, Hashable {
         let height: Int
     }
 
-    /// Roll-only extended metadata fields (no per-image override).
-    static let rollOnlyMetadataFields = ["film", "iso"]
+    /// Roll-only extended metadata fields (no per-image override): film
+    /// stock, ISO rating and the camera body describe the whole roll.
+    static let rollOnlyMetadataFields = ["film", "iso", "camera"]
 
-    /// The extended metadata fields, in display order. Each lives on both
-    /// the roll (the fallback) and each negative (the explicit value); the
-    /// effective value is the negative's own, else the roll's.
-    static let metadataFields = ["city", "state", "camera", "lens", "caption"]
+    /// The extended metadata fields a negative can override, in display
+    /// order. Each lives on both the roll (the fallback) and each negative
+    /// (the explicit value); the effective value is the negative's own,
+    /// else the roll's.
+    static let metadataFields = ["city", "state", "lens", "caption"]
 
     struct ImageMetadata: Sendable, Hashable {
         var city: String?
         var state: String?
-        var camera: String?
         var lens: String?
         var caption: String?
 
@@ -222,7 +223,6 @@ struct RollManifest: Sendable, Hashable {
                 switch field {
                 case "city": city
                 case "state": state
-                case "camera": camera
                 case "lens": lens
                 case "caption": caption
                 default: nil
@@ -232,7 +232,6 @@ struct RollManifest: Sendable, Hashable {
                 switch field {
                 case "city": city = newValue
                 case "state": state = newValue
-                case "camera": camera = newValue
                 case "lens": lens = newValue
                 case "caption": caption = newValue
                 default: break
@@ -256,6 +255,12 @@ struct RollManifest: Sendable, Hashable {
         let intendedDatetimeOriginal: String?
         let appliedDatetimeOriginal: String?
         let dateOverride: String?
+        /// The Frame log's logged local wall time (`YYYY-MM-DDTHH:MM:SS`) and
+        /// its UTC offset (`±HH:MM`). `nil` for manifests predating the
+        /// Frame log import. Default `nil` so existing construction sites
+        /// keep compiling.
+        var loggedDatetimeOriginal: String? = nil
+        var loggedOffset: String? = nil
 
         /// Section 3.8: dirty when the intent differs from what was last
         /// written into the TIFF.
@@ -373,6 +378,24 @@ struct RollManifest: Sendable, Hashable {
         /// Defaults to `nil` so every construction site that predates the
         /// field keeps compiling.
         var crop: CropState? = nil
+        /// The linked Frame log frame's uid; `nil` when unlinked or the
+        /// manifest predates the Frame log import.
+        var framelogFrameUID: String? = nil
+        /// Where the negative was shot, from the Frame log. All-nil when
+        /// absent.
+        var place: Place = .empty
+
+        /// The negative's Frame log place. It belongs to the negative only:
+        /// there is no roll-level fallback.
+        struct Place: Sendable, Hashable {
+            var latitude: Double?
+            var longitude: Double?
+            var gpsAccuracyM: Double?
+            var locationName: String?
+            var address: String?
+
+            static let empty = Place()
+        }
 
         /// The normalization meters the Edit tab needs from the stored record.
         struct NormalizationSummary: Sendable, Hashable {
@@ -395,9 +418,15 @@ struct RollManifest: Sendable, Hashable {
         // without its own explicit value displays and exports.
         var city: String?
         var state: String?
+        // Roll-only, like film and ISO: the camera body has no per-image
+        // override, so this is also the effective value for every negative.
         var camera: String?
         var lens: String?
         var caption: String?
+        /// The linked Frame log roll; `nil` when unlinked or the manifest
+        /// predates the Frame log import.
+        var framelogRollUID: String? = nil
+        var framelogRollNumber: Int? = nil
 
         subscript(field: String) -> String? {
             get {
@@ -584,7 +613,9 @@ struct RollManifest: Sendable, Hashable {
             sourceDatetimeOriginal: fields["source_datetime_original"]?.stringValue,
             intendedDatetimeOriginal: fields["intended_datetime_original"]?.stringValue,
             appliedDatetimeOriginal: fields["applied_datetime_original"]?.stringValue,
-            dateOverride: fields["date_override"]?.stringValue
+            dateOverride: fields["date_override"]?.stringValue,
+            loggedDatetimeOriginal: fields["logged_datetime_original"]?.stringValue,
+            loggedOffset: fields["logged_offset"]?.stringValue
         )
     }
 
@@ -592,7 +623,6 @@ struct RollManifest: Sendable, Hashable {
         ImageMetadata(
             city: fields["city"]?.stringValue,
             state: fields["state"]?.stringValue,
-            camera: fields["camera"]?.stringValue,
             lens: fields["lens"]?.stringValue,
             caption: fields["caption"]?.stringValue
         )
@@ -671,7 +701,19 @@ struct RollManifest: Sendable, Hashable {
                 .flatMap(NegativeScratches.Summary.init(fields:)),
             debandSummary: fields["deband"]?.objectValue
                 .flatMap(NegativeDeband.Summary.init(fields:)),
-            crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:))
+            crop: fields["crop"]?.objectValue.flatMap(CropState.init(fields:)),
+            framelogFrameUID: fields["framelog_frame_uid"]?.stringValue,
+            place: fields["place"]?.objectValue.map(Self.decodePlace) ?? .empty
+        )
+    }
+
+    private static func decodePlace(_ fields: [String: JSONValue]) -> Negative.Place {
+        Negative.Place(
+            latitude: fields["latitude"]?.doubleValue,
+            longitude: fields["longitude"]?.doubleValue,
+            gpsAccuracyM: fields["gps_accuracy_m"]?.doubleValue,
+            locationName: fields["location_name"]?.stringValue,
+            address: fields["address"]?.stringValue
         )
     }
 
@@ -732,7 +774,9 @@ struct RollManifest: Sendable, Hashable {
             state: fields["state"]?.stringValue,
             camera: fields["camera"]?.stringValue,
             lens: fields["lens"]?.stringValue,
-            caption: fields["caption"]?.stringValue
+            caption: fields["caption"]?.stringValue,
+            framelogRollUID: fields["framelog_roll_uid"]?.stringValue,
+            framelogRollNumber: fields["framelog_roll_number"]?.intValue
         )
     }
 }

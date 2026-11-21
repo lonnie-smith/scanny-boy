@@ -360,6 +360,95 @@ struct PreviewZoomModelTests {
         #expect(zoom.origin == origin)
     }
 
+    // MARK: - Failed renders
+
+    /// Counts loader calls per tile and fails them while `failing`.
+    @MainActor
+    private final class FlakyLoader {
+        var failing: Bool
+        var failuresLeft: Int?
+        private(set) var calls: [PreviewZoomModel.TileKey: Int] = [:]
+
+        init(failing: Bool, failuresLeft: Int? = nil) {
+            self.failing = failing
+            self.failuresLeft = failuresLeft
+        }
+
+        func load(_ rect: CGRect) -> Thumbnail? {
+            calls[PreviewZoomModel.TileKey(x: Int(rect.minX), y: Int(rect.minY)), default: 0] += 1
+            if let left = failuresLeft {
+                if left > 0 {
+                    failuresLeft = left - 1
+                    return nil
+                }
+                return PreviewZoomModelTests.thumbnail()
+            }
+            return failing ? nil : PreviewZoomModelTests.thumbnail()
+        }
+    }
+
+    private func zoomedIn(loader: FlakyLoader) async -> PreviewZoomModel {
+        let zoom = PreviewZoomModel()
+        zoom.retryDelay = .milliseconds(1)
+        zoom.update(
+            paneSize: Self.paneSize,
+            displayScale: Self.scale,
+            displaySize: Self.tiffSize,
+            loader: { rect in loader.load(rect) }
+        )
+        zoom.toggle(at: CGPoint(x: 250, y: 125))
+        await zoom.waitForCropForTesting()
+        return zoom
+    }
+
+    @Test("a tile that always fails is retried a bounded number of times, then reported")
+    func failingTileStopsAndReports() async {
+        let loader = FlakyLoader(failing: true)
+        let zoom = await zoomedIn(loader: loader)
+
+        #expect(zoom.viewportLoadFailed)
+        #expect(!zoom.viewportIsLoading)
+        #expect(!loader.calls.isEmpty)
+        #expect(loader.calls.values.allSatisfy { $0 == PreviewZoomModel.maxAttempts })
+        #expect(zoom.tiles.isEmpty)
+    }
+
+    @Test("a tile that fails once is retried and loads without reporting a failure")
+    func transientFailureRecovers() async {
+        let loader = FlakyLoader(failing: false, failuresLeft: 1)
+        let zoom = await zoomedIn(loader: loader)
+
+        #expect(!zoom.viewportLoadFailed)
+        #expect(!zoom.viewportIsLoading)
+        #expect(!zoom.tiles.isEmpty)
+    }
+
+    @Test("retry clears a reported failure and fetches again")
+    func retryRecoversAfterFailure() async {
+        let loader = FlakyLoader(failing: true)
+        let zoom = await zoomedIn(loader: loader)
+        #expect(zoom.viewportLoadFailed)
+
+        loader.failing = false
+        zoom.retry()
+        await zoom.waitForCropForTesting()
+
+        #expect(!zoom.viewportLoadFailed)
+        #expect(!zoom.viewportIsLoading)
+        #expect(!zoom.tiles.isEmpty)
+    }
+
+    @Test("zooming out and in again forgets earlier failures")
+    func zoomOutForgetsFailures() async {
+        let loader = FlakyLoader(failing: true)
+        let zoom = await zoomedIn(loader: loader)
+        #expect(zoom.viewportLoadFailed)
+
+        zoom.zoomOut()
+        #expect(zoom.failedTiles.isEmpty)
+        #expect(!zoom.viewportLoadFailed)
+    }
+
     // MARK: - Helpers
 
     private typealias TileKey = PreviewZoomModel.TileKey

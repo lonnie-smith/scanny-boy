@@ -2139,3 +2139,56 @@ def test_deband_edit_on_a_stale_op_carries_the_regions_onto_the_new_canvas(tmp_p
     assert op["regions"][0]["window"][:4] == [0.0, 0.0, 1100.0, 700.0]
     assert (op["enabled"], op["strength"]) == (False, 0.7)
     assert fields["deband"]["stale"] is False
+
+
+# --- render-region / render-preview replay the heal ops ------------------------
+
+
+def test_render_region_and_preview_pass_the_recorded_heal_ops(
+    spotty_roll, tmp_path, monkeypatch
+):
+    """A live spot repair is part of the display image, so the 1:1 zoom and
+    the negative view must replay it just as the managed preview does."""
+    from scanny_boy.edits import (
+        run_edit_detect_spots,
+        run_edit_render_preview,
+        run_edit_spots,
+    )
+
+    run_edit_detect_spots(spotty_roll, _NEGATIVE_ID, 0.5, emit=lambda event: None)
+    run_edit_spots(spotty_roll, _NEGATIVE_ID, repair=True, emit=lambda event: None)
+
+    seen = {}
+
+    def spy(name, real):
+        def wrapper(*args, **kwargs):
+            seen[name] = kwargs.get("heal")
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(
+        previews, "render_region", spy("region", previews.render_region)
+    )
+    monkeypatch.setattr(
+        previews, "render_preview", spy("preview", previews.render_preview)
+    )
+
+    run_edit_render_region(
+        spotty_roll,
+        _NEGATIVE_ID,
+        0,
+        0,
+        64,
+        64,
+        tmp_path / "region.rgba",
+        emit=lambda event: None,
+    )
+    run_edit_render_preview(
+        spotty_roll, _NEGATIVE_ID, tmp_path / "preview.png", emit=lambda event: None
+    )
+
+    for name in ("region", "preview"):
+        assert seen[name] is not None, name
+        assert seen[name].spots is not None, name
+        assert seen[name].spots["repair"] is True, name

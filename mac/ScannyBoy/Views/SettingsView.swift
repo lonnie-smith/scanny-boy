@@ -6,6 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     let library: RollLibrary
     @Bindable var capture: CaptureSessionModel
+    @Bindable var frameLog: FrameLogConnectionModel
 
     var body: some View {
         Form {
@@ -40,10 +41,65 @@ struct SettingsView: View {
                 }
                 Toggle("Audible cues", isOn: $capture.cuesEnabled)
             }
+            Section("Frame log") {
+                TextField("Base URL", text: $frameLog.baseURL)
+                    .onSubmit { frameLog.commitBaseURL() }
+                if let prefix = frameLog.tokenPrefix {
+                    LabeledContent("Token") {
+                        HStack {
+                            Text("\(prefix)…")
+                                .font(.system(.caption, design: .monospaced))
+                            Button("Remove") { frameLog.removeToken() }
+                        }
+                    }
+                } else {
+                    SecureField("Token", text: $frameLog.tokenDraft)
+                        .onSubmit { frameLog.saveToken() }
+                    HStack {
+                        Spacer()
+                        Button("Save Token") { frameLog.saveToken() }
+                            .disabled(frameLog.tokenDraft.isEmpty)
+                    }
+                }
+                HStack {
+                    Button("Test Connection") {
+                        Task { await frameLog.testConnection() }
+                    }
+                    .disabled(frameLog.testState == .testing)
+                    frameLogTestStatus
+                }
+                if let message = frameLog.errorMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Text("The token is kept in the Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
         .frame(width: 480)
+    }
+
+    @ViewBuilder
+    private var frameLogTestStatus: some View {
+        switch frameLog.testState {
+        case .idle:
+            EmptyView()
+        case .testing:
+            ProgressView()
+                .controlSize(.small)
+        case .connected(let rolls):
+            Text("Connected — \(rolls) rolls")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
     }
 
     private func chooseLibraryBase() {

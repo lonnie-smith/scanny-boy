@@ -42,6 +42,8 @@
         "grid_deleted",
         "metadata_updated",
         "metadata_values",
+        "framelog_rolls",
+        "framelog_roll",
         "base_frame_set",
         "spots_reported",
         "scratches_reported",
@@ -127,6 +129,14 @@
         "NEGATIVE_NOT_FOUND",
         "INVALID_EDIT",
         "INVALID_METADATA",
+        "FRAMELOG_NO_TOKEN",
+        "FRAMELOG_UNAUTHORIZED",
+        "FRAMELOG_NOT_FOUND",
+        "FRAMELOG_RATE_LIMITED",
+        "FRAMELOG_UNREACHABLE",
+        "REPLACE_TARGET_NOT_FOUND",
+        "REPLACE_REQUIRES_SINGLE_NEGATIVE",
+        "FRAMELOG_BAD_RESPONSE",
         "EXPORT_FAILED",
         "JXL_ENCODER_UNAVAILABLE",
         "CAMERA_MATRIX_MISSING",
@@ -320,7 +330,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 28
+      "const": 30
     },
     "event": { "$ref": "#/definitions/eventType" },
     "run_id": {
@@ -468,6 +478,9 @@
               "apply-metadata",
               "metadata set",
               "metadata values",
+              "framelog rolls",
+              "framelog roll",
+              "framelog apply",
               "edit rotate",
               "edit flip",
               "edit delete",
@@ -952,6 +965,63 @@
             "additionalProperties": { "enum": ["colour", "monochrome"] },
             "description": "Present only when `field` is `film`: stock name to film kind for every returned value that has one (possibly empty)."
           }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "framelog_rolls" } } },
+      "then": {
+        "required": ["rolls"],
+        "properties": {
+          "rolls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "uid", "roll_number", "film", "camera", "iso", "created_at",
+                "finished_at", "frame_count", "last_frame",
+                "first_captured_at", "last_captured_at"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "framelog_roll" } } },
+      "then": {
+        "required": ["roll", "frames", "alignment", "linked"],
+        "properties": {
+          "roll": {
+            "type": "object",
+            "required": [
+              "uid", "roll_number", "film", "camera", "iso", "created_at",
+              "finished_at", "frame_count", "last_frame", "missing_frame_numbers"
+            ]
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "uid", "frame_number", "captured_local", "precision", "offset",
+                "lens", "caption", "location_name", "address", "city", "state",
+                "has_position"
+              ]
+            }
+          },
+          "alignment": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["negative_id", "frame_number"],
+              "properties": {
+                "negative_id": { "type": "string" },
+                "frame_number": { "type": ["integer", "null"] }
+              }
+            }
+          },
+          "linked": { "type": "boolean" }
         }
       }
     },

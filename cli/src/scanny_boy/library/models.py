@@ -33,8 +33,9 @@ from sqlalchemy.types import TypeDecorator
 # editing"): present on both `rolls` (the roll-level fallback) and
 # `negatives` (the explicit per-image value that wins). Everything except
 # `caption` is also a `metadata_values` catalog field the typeahead offers.
-METADATA_FIELDS = ("city", "state", "camera", "lens", "caption")
-ROLL_ONLY_METADATA_FIELDS = ("film", "iso")
+# `film`, `iso` and `camera` are roll-only (no `negatives` column).
+METADATA_FIELDS = ("city", "state", "lens", "caption")
+ROLL_ONLY_METADATA_FIELDS = ("film", "iso", "camera")
 
 
 class JSONText(TypeDecorator):
@@ -85,6 +86,10 @@ class RollRow(Base):
     # "camera_model": ..., "matrix_version": 1}`. Nullable throughout —
     # pre-0010 rolls read back with NULL and no block.
     camera_color: Mapped[dict | None] = mapped_column(JSONText)
+    # docs/METADATA_IMPORT_PLAN.md section 4.1: the linked Frame log roll.
+    # Nullable throughout — pre-0022 rows read back with NULLs.
+    framelog_roll_uid: Mapped[str | None] = mapped_column(Text)
+    framelog_roll_number: Mapped[int | None] = mapped_column(Integer)
     # The roll-level extended-metadata fallbacks: what every negative
     # without its own explicit value displays and exports. Nullable
     # throughout — pre-0006 rows (and a roll nothing was typed into) are
@@ -212,9 +217,17 @@ class NegativeRow(Base):
     # semantics of the extended metadata feature.
     city: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str | None] = mapped_column(Text)
-    camera: Mapped[str | None] = mapped_column(Text)
     lens: Mapped[str | None] = mapped_column(Text)
     caption: Mapped[str | None] = mapped_column(Text)
+    # Frame log link and place (docs/METADATA_IMPORT_PLAN.md section 4.1).
+    # Negative-only: no roll-level fallback. Nullable throughout — pre-0022
+    # rows read back with NULLs.
+    framelog_frame_uid: Mapped[str | None] = mapped_column(Text)
+    latitude: Mapped[float | None] = mapped_column(SQLFloat)
+    longitude: Mapped[float | None] = mapped_column(SQLFloat)
+    gps_accuracy_m: Mapped[float | None] = mapped_column(SQLFloat)
+    location_name: Mapped[str | None] = mapped_column(Text)
+    address: Mapped[str | None] = mapped_column(Text)
     # Set by the preview generator once a small preview of the published
     # TIFF exists; null until then.
     preview_path: Mapped[str | None] = mapped_column(Text)

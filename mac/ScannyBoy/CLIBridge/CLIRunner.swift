@@ -6,9 +6,23 @@ import Foundation
 /// `--files` takes filenames relative to `--input`, never absolute paths.
 public struct CLICommand: Sendable, Hashable {
     public let arguments: [String]
+    /// Extra variables for this one invocation, merged over the runner's
+    /// own. Only a one-shot child receives them: a served request runs in
+    /// the resident helper, whose environment was fixed when it started.
+    public let environment: [String: String]
 
-    public init(arguments: [String]) {
+    public init(arguments: [String], environment: [String: String] = [:]) {
         self.arguments = arguments
+        self.environment = environment
+    }
+
+    /// The same command with `extra` added to its environment; a key
+    /// already present is replaced.
+    public func withEnvironment(_ extra: [String: String]) -> CLICommand {
+        CLICommand(
+            arguments: arguments,
+            environment: environment.merging(extra) { _, new in new }
+        )
     }
 
     /// `scanny-boy roll init --library DIR --name NAME [--film-kind KIND]`
@@ -776,6 +790,8 @@ public struct CLICommand: Sendable, Hashable {
         allowPartial: Bool = true,
         rig: String? = nil,
         deferRollRefresh: Bool = false,
+        replaces: String? = nil,
+        sequenceAs: URL? = nil,
         composeOnly: Bool = false
     ) -> CLICommand {
         var arguments = ["stitch", "--work", work.path, "--roll", roll.path]
@@ -793,6 +809,12 @@ public struct CLICommand: Sendable, Hashable {
         }
         if deferRollRefresh {
             arguments.append("--defer-roll-refresh")
+        }
+        if let replaces {
+            arguments.append(contentsOf: ["--replaces", replaces])
+        }
+        if let sequenceAs {
+            arguments.append(contentsOf: ["--sequence-as", sequenceAs.path])
         }
         if composeOnly {
             arguments.append("--compose-only")
@@ -886,6 +908,68 @@ public struct CLICommand: Sendable, Hashable {
     public static func gridDelete(profile: String) -> CLICommand {
         CLICommand(arguments: ["grid", "delete", "--profile", profile])
     }
+
+    /// `scanny-boy framelog rolls --status STATUS --base-url URL`
+    ///
+    /// The token is never an argument. Attach it with
+    /// `withEnvironment([FrameLogCredentials.tokenEnvironmentKey: token])`.
+    public static func framelogRolls(status: String, baseURL: String) -> CLICommand {
+        CLICommand(arguments: [
+            "framelog", "rolls",
+            "--status", status,
+            "--base-url", baseURL,
+        ])
+    }
+
+    /// `scanny-boy framelog roll --roll DIR --ref UID|NUMBER --base-url URL`
+    public static func framelogRoll(roll: URL, ref: String, baseURL: String) -> CLICommand {
+        CLICommand(arguments: [
+            "framelog", "roll",
+            "--roll", roll.path,
+            "--ref", ref,
+            "--base-url", baseURL,
+        ])
+    }
+
+    /// `scanny-boy framelog apply --roll DIR --ref UID --assignments JSON --base-url URL`
+    ///
+    /// `assignments` maps each negative's id to its frame number, or to nil
+    /// for no frame. The token is attached as for `framelogRolls`.
+    public static func framelogApply(
+        roll: URL,
+        ref: String,
+        assignments: [String: Int?],
+        baseURL: String
+    ) -> CLICommand {
+        CLICommand(arguments: [
+            "framelog", "apply",
+            "--roll", roll.path,
+            "--ref", ref,
+            "--assignments", framelogAssignmentsJSON(assignments),
+            "--base-url", baseURL,
+        ])
+    }
+
+    /// `{"negative_id": frame_number | null, ...}` with sorted keys, so the
+    /// same assignments always produce the same argument.
+    static func framelogAssignmentsJSON(_ assignments: [String: Int?]) -> String {
+        var object: [String: Any] = [:]
+        for (negativeID, frameNumber) in assignments {
+            if let frameNumber {
+                object[negativeID] = frameNumber
+            } else {
+                object[negativeID] = NSNull()
+            }
+        }
+        guard
+            let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys]
+            ),
+            let json = String(data: data, encoding: .utf8)
+        else { return "{}" }
+        return json
+    }
 }
 
 /// Starts CLI sessions against one resolved executable.
@@ -968,8 +1052,9 @@ public struct CLIRunner: Sendable {
     /// to the resident helper; long jobs keep their own one-shot process,
     /// with their own cancellation and progress semantics, and a crash in
     /// one cannot take the interactive session down. `probe`, `prepare`,
-    /// `apply-metadata`, `export`, `run`, `stitch` and `rig
-    /// create`/`delete` stay one-shot; `roll init`/`rename`/`delete`/
+    /// `apply-metadata`, `export`, `run`, `stitch`, `rig
+    /// create`/`delete` and every `framelog` command stay one-shot;
+    /// `roll init`/`rename`/`delete`/
     /// `set-base-frame`/`set-flatfield-reference`/`set-film-kind` mutate
     /// the roll folder and stay one-shot with them.
     static func routesThroughDaemon(_ command: CLICommand) -> Bool {
@@ -1001,11 +1086,6 @@ public struct CLIRunner: Sendable {
     }
 
     public func session(for command: CLICommand) -> CLISession {
-        var environment: [String: String]?
-        if !environmentOverrides.isEmpty {
-            environment = ProcessInfo.processInfo.environment
-            environment!.merge(environmentOverrides) { _, override in override }
-        }
         let served: CLISession.ServedRequest?
         if daemonRoutingEnabled && Self.routesThroughCaptureDaemon(command) {
             served = CLISession.ServedRequest(
@@ -1019,6 +1099,15 @@ public struct CLIRunner: Sendable {
             )
         } else {
             served = nil
+        }
+        // A served request has no child of its own, so the command's
+        // variables apply only to a one-shot process.
+        let commandEnvironment = served == nil ? command.environment : [:]
+        var environment: [String: String]?
+        if !environmentOverrides.isEmpty || !commandEnvironment.isEmpty {
+            environment = ProcessInfo.processInfo.environment
+            environment!.merge(environmentOverrides) { _, override in override }
+            environment!.merge(commandEnvironment) { _, override in override }
         }
         return CLISession(
             configuration: CLISession.Configuration(

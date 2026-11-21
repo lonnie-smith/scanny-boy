@@ -23,6 +23,8 @@ follow).
 from __future__ import annotations
 
 import datetime
+import math
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -55,10 +57,40 @@ ROLL_KEYS = (
     "camera",
     "lens",
     "caption",
+    "framelog_roll_uid",
+    "framelog_roll_number",
 )
 # The payload's per-negative keys, plus `capture_date` (the negative's
-# `date_override`).
-NEGATIVE_KEYS = ("capture_date",) + METADATA_FIELDS
+# `date_override`). `film`, `iso` and `camera` are roll-only, so a negative
+# payload carrying one is rejected as an unknown field. The Frame log keys
+# (docs/METADATA_IMPORT_PLAN.md section 4.4) belong to the negative only.
+NEGATIVE_KEYS = (
+    ("capture_date",)
+    + METADATA_FIELDS
+    + (
+        "framelog_frame_uid",
+        "latitude",
+        "longitude",
+        "gps_accuracy_m",
+        "location_name",
+        "address",
+        "logged_time",
+        "logged_offset",
+    )
+)
+
+# Negative keys stored on `NegativeRecord.place`, and the two stored on its
+# `capture_time` under different names.
+_PLACE_KEYS = ("latitude", "longitude", "gps_accuracy_m", "location_name", "address")
+_CAPTURE_TIME_KEYS = {
+    "logged_time": "logged_datetime_original",
+    "logged_offset": "logged_offset",
+}
+
+_FRAMELOG_UID = re.compile(r"[0-9a-z]{10}")
+_LOGGED_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+_LOGGED_OFFSET = re.compile(r"[+-]\d{2}:\d{2}")
+_MAX_TEXT = 500
 
 
 class MetadataEditFailure(Exception):
@@ -97,6 +129,106 @@ def _clean_date(value: Any, what: str) -> str | None:
             f"{what} must be a YYYY-MM-DD date, got {cleaned!r}",
         ) from None
     return cleaned
+
+
+def _clean_uid(value: Any, what: str) -> str | None:
+    cleaned = _clean_value(value, what)
+    if cleaned is not None and _FRAMELOG_UID.fullmatch(cleaned) is None:
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA,
+            f"{what} must be 10 characters of [0-9a-z], got {cleaned!r}",
+        )
+    return cleaned
+
+
+def _clean_roll_number(value: Any, what: str) -> int | None:
+    if value is None or value == "":
+        return None
+    # `bool` is an `int` subclass; `true` is not a roll number.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA, f"{what} must be an integer >= 1 or null"
+        )
+    return value
+
+
+def _clean_number(
+    value: Any, what: str, low: float, high: float = math.inf
+) -> float | None:
+    """A finite number in `low..high`; `None` or `""` clears."""
+    if value is None or value == "":
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or not low <= value <= high
+    ):
+        bound = f"{low:g}..{high:g}" if high != math.inf else f">= {low:g}"
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA, f"{what} must be a number {bound} or null"
+        )
+    return float(value)
+
+
+def _clean_text(value: Any, what: str) -> str | None:
+    cleaned = _clean_value(value, what)
+    if cleaned is not None and len(cleaned) > _MAX_TEXT:
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA, f"{what} must be at most {_MAX_TEXT} characters"
+        )
+    return cleaned
+
+
+def _clean_logged_time(value: Any, what: str) -> str | None:
+    cleaned = _clean_value(value, what)
+    if cleaned is None:
+        return None
+    try:
+        if _LOGGED_TIME.fullmatch(cleaned) is None:
+            raise ValueError(cleaned)
+        datetime.datetime.fromisoformat(cleaned)
+    except ValueError:
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA,
+            f"{what} must be a YYYY-MM-DDTHH:MM:SS date and time, got {cleaned!r}",
+        ) from None
+    return cleaned
+
+
+def _clean_logged_offset(value: Any, what: str) -> str | None:
+    cleaned = _clean_value(value, what)
+    if cleaned is not None and _LOGGED_OFFSET.fullmatch(cleaned) is None:
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA, f"{what} must be a +HH:MM or -HH:MM offset"
+        )
+    return cleaned
+
+
+def _clean_field(key: str, value: Any, what: str) -> Any:
+    """Normalizes and validates one payload value by key."""
+    label = f"{what} {key}"
+    match key:
+        case "capture_date":
+            return _clean_date(value, label)
+        case "framelog_roll_uid" | "framelog_frame_uid":
+            return _clean_uid(value, label)
+        case "framelog_roll_number":
+            return _clean_roll_number(value, label)
+        case "latitude":
+            return _clean_number(value, label, -90, 90)
+        case "longitude":
+            return _clean_number(value, label, -180, 180)
+        case "gps_accuracy_m":
+            return _clean_number(value, label, 0)
+        case "location_name" | "address":
+            return _clean_text(value, label)
+        case "logged_time":
+            return _clean_logged_time(value, label)
+        case "logged_offset":
+            return _clean_logged_offset(value, label)
+        case _:
+            return _clean_value(value, label)
 
 
 def _validate_field_keys(
@@ -145,11 +277,56 @@ def _apply_negative_fields(
                 Code.NEGATIVE_NOT_FOUND,
                 f"{negative_id} is not a negative of this roll",
             )
-        for key, value in fields.items():
+        for key, value in _clear_superseded_times(fields).items():
             if key == "capture_date":
                 negative.capture_time.date_override = value
+            elif key in _CAPTURE_TIME_KEYS:
+                setattr(negative.capture_time, _CAPTURE_TIME_KEYS[key], value)
+            elif key in _PLACE_KEYS:
+                setattr(negative.place, key, value)
+            elif key == "framelog_frame_uid":
+                negative.framelog_frame_uid = value
             else:
                 setattr(negative.metadata, key, value)
+        _check_negative_rules(negative_id, negative)
+
+
+def _clear_superseded_times(fields: dict[str, Any]) -> dict[str, Any]:
+    """The payload's fields for one negative, plus the implied clears: a
+    manual date override is authoritative over a logged time, and a logged
+    time over an override, unless the payload sets the other side itself."""
+    fields = dict(fields)
+    if fields.get("capture_date") is not None and not (
+        "logged_time" in fields or "logged_offset" in fields
+    ):
+        fields["logged_time"] = None
+        fields["logged_offset"] = None
+    if fields.get("logged_time") is not None and "capture_date" not in fields:
+        fields["capture_date"] = None
+    # An offset belongs to the time it was logged with: a new (or cleared)
+    # logged time without an offset of its own drops the stored one.
+    if "logged_time" in fields and "logged_offset" not in fields:
+        fields["logged_offset"] = None
+    return fields
+
+
+def _check_negative_rules(negative_id: str, negative: NegativeRecord) -> None:
+    """The cross-field rules, on the negative as merged."""
+    place, capture_time = negative.place, negative.capture_time
+    if (place.latitude is None) != (place.longitude is None):
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA,
+            f"negative {negative_id!r}: latitude and longitude must be set "
+            "together",
+        )
+    if (
+        capture_time.logged_offset is not None
+        and capture_time.logged_datetime_original is None
+    ):
+        raise MetadataEditFailure(
+            Code.INVALID_METADATA,
+            f"negative {negative_id!r}: logged_offset requires logged_time",
+        )
 
 
 def run_metadata_set(
@@ -198,21 +375,12 @@ def run_metadata_set(
 
     # Normalize and validate the whole payload before touching the manifest.
     clean_roll_fields = {
-        key: (
-            _clean_date(value, f"roll {key}")
-            if key == "capture_date"
-            else _clean_value(value, f"roll {key}")
-        )
-        for key, value in roll_fields.items()
+        key: _clean_field(key, value, "roll") for key, value in roll_fields.items()
     }
     clean_negative_fields: dict[str, dict[str, Any]] = {}
     for negative_id, fields in negative_fields.items():
         clean_negative_fields[negative_id] = {
-            key: (
-                _clean_date(value, f"negative {negative_id!r} {key}")
-                if key == "capture_date"
-                else _clean_value(value, f"negative {negative_id!r} {key}")
-            )
+            key: _clean_field(key, value, f"negative {negative_id!r}")
             for key, value in fields.items()
         }
 

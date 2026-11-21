@@ -232,6 +232,22 @@ struct ContentView: View {
             GridProfilesSheet(grid: grid)
         }
         .modifier(intakePresentation)
+        .modifier(frameLogImportPresentation)
+    }
+
+    /// Kept out of `body`'s own chain, like `intakePresentation`.
+    private var frameLogImportPresentation: some ViewModifier {
+        FrameLogImportPresentation(
+            edit: edit,
+            keyboard: keyboard,
+            canPresent: {
+                presentedIntake == nil
+                    && !isPresentingNewRollSheet
+                    && !isPresentingRestitch
+                    && !isPresentingFlatFieldProfiles
+                    && !isPresentingGridProfiles
+            }
+        )
     }
 
     /// Kept out of `body`'s own chain, which is at the type checker's limit.
@@ -334,7 +350,8 @@ struct ContentView: View {
                 library: library,
                 edit: edit,
                 run: run,
-                activity: activity
+                activity: activity,
+                keyboard: keyboard
             )
         case .export:
             ExportStageView(export: export, edit: edit, run: run, activity: activity)

@@ -162,6 +162,14 @@ struct CLIEventTests {
         #expect(event.maxOverlapMAD == 0.004)
     }
 
+    @Test("REPLACE_* codes decode as known codes")
+    func replaceCodesDecode() {
+        #expect(CLICode(name: "REPLACE_TARGET_NOT_FOUND") == .replaceTargetNotFound)
+        #expect(CLICode(name: "REPLACE_REQUIRES_SINGLE_NEGATIVE") == .replaceRequiresSingleNegative)
+        #expect(CLICode.replaceTargetNotFound.name == "REPLACE_TARGET_NOT_FOUND")
+        #expect(CLICode.replaceRequiresSingleNegative.name == "REPLACE_REQUIRES_SINGLE_NEGATIVE")
+    }
+
     @Test("negative_failed")
     func negativeFailedDecodes() throws {
         let event = try CLIEvent(
@@ -181,7 +189,7 @@ struct CLIEventTests {
     func negativeDeletedDecodes() throws {
         let event = try CLIEvent(
             line: """
-                {"protocol_version":28,"event":"negative_deleted",\
+                {"protocol_version":30,"event":"negative_deleted",\
                 "negative_id":"a1b2c3-negative-01","output":"_DSC4638.tif"}
                 """
         )
@@ -411,7 +419,7 @@ struct CLIEventTests {
     @Test("negative_deleted for an unstitched negative carries a null output")
     func negativeDeletedUnstitchedDecodes() throws {
         let event = try CLIEvent(
-            line: #"{"protocol_version":28,"event":"negative_deleted","negative_id":"n1","output":null}"#
+            line: #"{"protocol_version":30,"event":"negative_deleted","negative_id":"n1","output":null}"#
         )
         #expect(event.kind == .negativeDeleted)
         #expect(event.output == nil)
@@ -650,7 +658,7 @@ struct CLIEventTests {
     @Test("a missing event type is rejected")
     func missingEventTypeIsRejected() {
         #expect(throws: CLIEventDecodingError.missingEventType) {
-            try CLIEvent(line: #"{"protocol_version":28,"command":"probe"}"#)
+            try CLIEvent(line: #"{"protocol_version":30,"command":"probe"}"#)
         }
     }
 

@@ -973,5 +973,168 @@ struct StitchQueueModelTests {
         defaults.set(stored, forKey: StitchQueueModel.parallelStitchesKey)
         #expect(Self.makeQueue(defaults: defaults).parallelStitches == 2)
     }
-}
 
+    // MARK: - Re-scans (TETHER_PLAN §4.5)
+
+    /// A commit that logs its arguments, then publishes as `n-$name`.
+    private static let commitLoggingArguments = """
+        \(started)
+        echo "commit-args $name $*" >> "$LOG"
+        echo '\(TestEvents.line(#"{"event":"negative_published","negative_id":"NEGID","output":"out.tif"}"#))' | sed "s/NEGID/n-$name/"
+        \(finishedOK)
+        exit 0
+        """
+
+    private static func captureFolder(_ directory: URL) -> URL {
+        directory.appending(path: "capture-roll", directoryHint: .isDirectory)
+    }
+
+    private static func enqueueRescan(
+        stamp: String, target: CaptureSessionModel.RescanTarget,
+        on queue: StitchQueueModel
+    ) {
+        queue.enqueue(
+            CaptureSessionModel.CompletedNegative(
+                id: UUID(), stamp: stamp, frameURLs: [], startedAt: Date(), rescanTarget: target
+            )
+        )
+    }
+
+    @Test("a re-scan of a roll negative commits with --replaces and trashes only capture-folder frames")
+    func rescanOfRollNegative() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "queue.log")
+        let script = Self.queueScript(
+            log: log, compose: Self.composeOK(seconds: 0), commit: Self.commitLoggingArguments
+        )
+        let queue = try Self.makeQueue(script: script, in: directory)
+        var recycled: [URL] = []
+        queue.recycle = { recycled.append(contentsOf: $0) }
+        Self.enqueue([], on: queue, in: directory)
+        let inside = Self.captureFolder(directory).appending(path: "old_01.NEF")
+        let outside = directory.appending(path: "elsewhere.NEF")
+        for url in [inside, outside] { try Data().write(to: url) }
+
+        Self.enqueueRescan(
+            stamp: "r",
+            target: .init(
+                displayName: "old_01.tif", rollNegativeID: "old-1", queueEntryID: nil,
+                oldFramePaths: [inside.path, outside.path]
+            ),
+            on: queue
+        )
+
+        #expect(await Self.waitFor { queue.negatives.first?.step == .published })
+        let commit = Self.logLines(log).first { $0.hasPrefix("commit-args r") } ?? ""
+        #expect(commit.contains("--replaces old-1"))
+        #expect(!commit.contains("--sequence-as"))
+        #expect(recycled.map(\.standardizedFileURL) == [inside.standardizedFileURL])
+        #expect(queue.negatives.first?.negativeID == "n-r")
+    }
+
+    @Test("a re-scan of a row that never reached the roll anchors on its first frame and replaces the row")
+    func rescanOfQueueEntry() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "queue.log")
+        let commit = """
+            if [ "$name" = "a" ]; then
+              \(Self.started)
+              \(Self.errorEvent("STITCH_FAILED"))
+              \(Self.finishedFailed)
+              exit 1
+            fi
+            \(Self.commitLoggingArguments)
+            """
+        let script = Self.queueScript(log: log, compose: Self.composeOK(seconds: 0), commit: commit)
+        let queue = try Self.makeQueue(script: script, in: directory)
+        queue.recycle = { _ in }
+        Self.enqueue(["a"], on: queue, in: directory)
+        #expect(await Self.waitFor { queue.negatives.first?.step == .stitchFailed })
+        let old = try #require(queue.negatives.first)
+        #expect(old.negativeID == nil)
+        let frame = Self.captureFolder(directory).appending(path: "a_01.NEF")
+
+        Self.enqueueRescan(
+            stamp: "b",
+            target: .init(
+                displayName: "a", rollNegativeID: nil, queueEntryID: old.id,
+                oldFramePaths: [frame.path]
+            ),
+            on: queue
+        )
+        #expect(queue.hasPendingReplacement(rollNegativeID: nil, entryID: old.id))
+
+        #expect(await Self.waitFor { queue.negatives.last?.step == .published })
+        let line = Self.logLines(log).first { $0.hasPrefix("commit-args b") } ?? ""
+        #expect(line.contains("--sequence-as \(frame.path)"))
+        #expect(queue.negatives.first?.step == .replaced)
+        #expect(!queue.hasPendingReplacement(rollNegativeID: nil, entryID: old.id))
+        #expect(!queue.hasUnpublishedEntries)
+        #expect(queue.discardUnpublished().isEmpty)
+    }
+
+    @Test("a re-scan of a published row replaces it by its negative id")
+    func rescanOfPublishedRow() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "queue.log")
+        let script = Self.queueScript(
+            log: log, compose: Self.composeOK(seconds: 0), commit: Self.commitLoggingArguments
+        )
+        let queue = try Self.makeQueue(script: script, in: directory)
+        queue.recycle = { _ in }
+        Self.enqueue(["a"], on: queue, in: directory)
+        #expect(await Self.waitFor { queue.negatives.first?.step == .published })
+        let old = try #require(queue.negatives.first)
+
+        Self.enqueueRescan(
+            stamp: "b",
+            target: .init(
+                displayName: "out.tif", rollNegativeID: old.negativeID, queueEntryID: old.id,
+                oldFramePaths: []
+            ),
+            on: queue
+        )
+
+        #expect(await Self.waitFor { queue.negatives.last?.step == .published })
+        let line = Self.logLines(log).first { $0.hasPrefix("commit-args b") } ?? ""
+        #expect(line.contains("--replaces n-a"))
+        #expect(queue.negatives.first?.step == .replaced)
+    }
+
+    @Test("a queued re-scan survives a relaunch")
+    func rescanSurvivesRelaunch() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appending(path: "queue.log")
+        let script = Self.queueScript(
+            log: log, compose: Self.composeOK(seconds: 5), commit: Self.commitOK()
+        )
+        let queue = try Self.makeQueue(script: script, in: directory)
+        // Restore drops state whose roll folder is gone.
+        try FileManager.default.createDirectory(
+            at: directory.appending(path: "roll", directoryHint: .isDirectory),
+            withIntermediateDirectories: true
+        )
+        Self.enqueue([], on: queue, in: directory)
+        let target = CaptureSessionModel.RescanTarget(
+            displayName: "old.tif", rollNegativeID: "old-1", queueEntryID: nil,
+            oldFramePaths: ["/x/old.NEF"]
+        )
+        Self.enqueueRescan(stamp: "r", target: target, on: queue)
+
+        let relaunched = try Self.makeQueue(script: script, in: directory)
+
+        #expect(
+            relaunched.negatives.first?.replacement
+                == StitchQueueModel.Replacement(
+                    displayName: "old.tif", rollNegativeID: "old-1", oldEntryID: nil,
+                    oldFramePaths: ["/x/old.NEF"]
+                )
+        )
+        _ = queue.discardUnpublished()
+        _ = relaunched.discardUnpublished()
+    }
+}

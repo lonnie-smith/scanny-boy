@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -33,15 +34,22 @@ final class StitchQueueModel {
         case checkFailed
         case stitchFailed
         case waitingForDisk
+        /// A re-scan of this negative published in its place (TETHER_PLAN
+        /// §4.5): its frames went to the Trash and its work folder is gone.
+        case replaced
 
-        /// Published or failed: nothing more will run for this entry until
-        /// the user acts on it.
+        /// Published, failed or replaced: nothing more will run for this
+        /// entry until the user acts on it.
         var isTerminal: Bool {
             switch self {
-            case .published, .prepareFailed, .checkFailed, .stitchFailed: true
+            case .published, .prepareFailed, .checkFailed, .stitchFailed, .replaced: true
             default: false
             }
         }
+
+        /// Done with for good: published, or published over by a re-scan.
+        /// Discard never touches a settled entry.
+        var isSettled: Bool { self == .published || self == .replaced }
 
         /// Not yet composing: the entry has not started its compose, and a
         /// later negative of its roll must not start one ahead of it.
@@ -69,6 +77,21 @@ final class StitchQueueModel {
         var captureFolderURL: URL { URL(fileURLWithPath: captureFolder) }
     }
 
+    /// What a re-scan replaces (TETHER_PLAN §4.5), snapshotted from the
+    /// capture session's target when the re-scan is enqueued.
+    struct Replacement: Codable, Sendable, Equatable {
+        /// The old negative's output filename or stamp, for the row's label.
+        var displayName: String
+        /// The target's `negative_id` when it was picked from the roll.
+        var rollNegativeID: String?
+        /// The target's queue entry when it was picked from this queue.
+        var oldEntryID: UUID?
+        /// The old negative's frames, moved to the Trash once the re-scan
+        /// publishes. The first one anchors a target that never reached the
+        /// roll (`stitch --sequence-as`).
+        var oldFramePaths: [String]
+    }
+
     struct QueuedNegative: Identifiable, Codable, Sendable {
         let id: UUID
         let stamp: String
@@ -83,6 +106,11 @@ final class StitchQueueModel {
         /// Nil only for entries persisted before contexts existed; restore
         /// fills those in from the state file's header.
         var context: EntryContext?
+        /// The roll's `negative_id` for this entry, from its commit's
+        /// `negative_published` or `negative_failed`.
+        var negativeID: String? = nil
+        /// Set when this entry is a re-scan of an earlier negative.
+        var replacement: Replacement? = nil
     }
 
     struct StepProgress: Equatable, Sendable {
@@ -143,6 +171,10 @@ final class StitchQueueModel {
     private var retryNotBefore: [UUID: Date] = [:]
     /// How long an entry that found its roll busy waits before it retries.
     var busyRetryDelay: Duration = .milliseconds(500)
+    /// Moves a replaced negative's frames to the Trash; tests substitute it.
+    var recycle: ([URL]) -> Void = { urls in
+        NSWorkspace.shared.recycle(urls) { _, _ in }
+    }
 
     /// How many negatives are stitched at the same time. The queue caps
     /// concurrent composes, and a roll's composed-but-unpublished entries
@@ -179,11 +211,13 @@ final class StitchQueueModel {
 
     /// Everything not yet published, failures included — what Discard removes.
     var hasUnpublishedEntries: Bool {
-        negatives.contains { $0.step != .published }
+        negatives.contains { !$0.step.isSettled }
     }
 
+    /// Settled entries: published, or replaced by a re-scan that published.
+    /// Either way the capture session holds nothing of theirs to recycle.
     var publishedNegativeIDs: Set<UUID> {
-        Set(negatives.filter { $0.step == .published }.map(\.id))
+        Set(negatives.filter { $0.step.isSettled }.map(\.id))
     }
 
     var isQueueBusy: Bool { hasWork || !committingRolls.isEmpty || isRefreshing }
@@ -199,7 +233,19 @@ final class StitchQueueModel {
     }
 
     func hasUnpublishedEntries(for roll: URL?) -> Bool {
-        negatives(for: roll).contains { $0.step != .published }
+        negatives(for: roll).contains { !$0.step.isSettled }
+    }
+
+    /// Whether a re-scan of this target is already queued and unfinished, so
+    /// a second one must not be started.
+    func hasPendingReplacement(rollNegativeID: String?, entryID: UUID?) -> Bool {
+        negatives.contains { entry in
+            guard let replacement = entry.replacement, !entry.step.isTerminal else {
+                return false
+            }
+            return (entryID != nil && replacement.oldEntryID == entryID)
+                || (rollNegativeID != nil && replacement.rollNegativeID == rollNegativeID)
+        }
     }
 
     func hasWork(on roll: URL) -> Bool {
@@ -251,7 +297,15 @@ final class StitchQueueModel {
                 rigProfileID: rigProfileID,
                 across: across,
                 down: down
-            )
+            ),
+            replacement: negative.rescanTarget.map { target in
+                Replacement(
+                    displayName: target.displayName,
+                    rollNegativeID: target.rollNegativeID,
+                    oldEntryID: target.queueEntryID,
+                    oldFramePaths: target.oldFramePaths
+                )
+            }
         )
         negatives.append(entry)
         persistState()
@@ -287,7 +341,7 @@ final class StitchQueueModel {
         }
         var urls: [URL] = []
         let remaining = negatives.filter { entry in
-            guard entry.step != .published else { return true }
+            guard !entry.step.isSettled else { return true }
             if let roll, !(entry.context.map { Self.isSameRoll($0.rollURL, roll) } ?? false) {
                 return true
             }
@@ -555,13 +609,19 @@ final class StitchQueueModel {
 
     private func runCommit(id: UUID, context: EntryContext, workFolder: URL) async {
         let roll = Self.normalizedPath(context.rollURL)
+        let target = replacementArguments(for: id)
         let command = CLICommand.stitch(
             work: workFolder, roll: context.rollURL, rig: context.rigProfileID,
-            deferRollRefresh: true
+            deferRollRefresh: true, replaces: target.replaces, sequenceAs: target.sequenceAs
         )
         let result = await runCommand(
             id: id, command,
             onEvent: { [weak self] event in
+                guard event.kind == .negativePublished || event.kind == .negativeFailed
+                else { return }
+                if let negativeID = event.negativeID {
+                    self?.mutateEntry(id: id) { $0.negativeID = negativeID }
+                }
                 guard event.kind == .negativePublished else { return }
                 self?.commitPublished(id: id, roll: roll, output: event.output)
             }
@@ -612,9 +672,58 @@ final class StitchQueueModel {
                 $0.publishedAt = Date()
                 $0.outputFilename = output
             }
+            if let entry = negatives.first(where: { $0.id == id }),
+                let replacement = entry.replacement
+            {
+                settleReplacement(replacement, by: entry)
+            }
         }
         rollsNeedingRefresh.insert(roll)
         onNegativePublished?()
+    }
+
+    // MARK: - Re-scans
+
+    /// The commit's target flags for a re-scan (TETHER_PLAN §4.5): the old
+    /// negative's `negative_id` when it reached the roll (picked from the
+    /// roll, or a queue row whose commit reported one), otherwise its first
+    /// frame, whose capture time the new negative ranks at.
+    private func replacementArguments(for id: UUID) -> (replaces: String?, sequenceAs: URL?) {
+        guard let replacement = negatives.first(where: { $0.id == id })?.replacement else {
+            return (nil, nil)
+        }
+        let oldEntryNegativeID = replacement.oldEntryID.flatMap { oldID in
+            negatives.first(where: { $0.id == oldID })?.negativeID
+        }
+        if let negativeID = replacement.rollNegativeID ?? oldEntryNegativeID {
+            return (negativeID, nil)
+        }
+        return (nil, replacement.oldFramePaths.first.map { URL(fileURLWithPath: $0) })
+    }
+
+    /// A re-scan published in its target's place: the old row (if this
+    /// queue holds it) becomes `replaced` and loses its work folder, and the
+    /// old frames go to the Trash — only those inside the capture folder, so
+    /// a roll negative scanned in from elsewhere never loses its sources.
+    private func settleReplacement(_ replacement: Replacement, by entry: QueuedNegative) {
+        for index in negatives.indices where negatives[index].id != entry.id {
+            let old = negatives[index]
+            let isTarget =
+                old.id == replacement.oldEntryID
+                || (replacement.rollNegativeID != nil
+                    && old.negativeID == replacement.rollNegativeID)
+            guard isTarget else { continue }
+            negatives[index].step = .replaced
+            try? FileManager.default.removeItem(atPath: old.workFolder)
+        }
+        guard let folder = entry.context?.captureFolderURL.standardizedFileURL.path else {
+            return
+        }
+        let trash = replacement.oldFramePaths
+            .map { URL(fileURLWithPath: $0).standardizedFileURL }
+            .filter { $0.path.hasPrefix(folder + "/") }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        if !trash.isEmpty { recycle(trash) }
     }
 
     // MARK: - Retry

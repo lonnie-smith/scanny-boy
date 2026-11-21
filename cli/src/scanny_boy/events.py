@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 28
+PROTOCOL_VERSION = 30
 
 
 class EventType(enum.StrEnum):
@@ -39,6 +39,8 @@ class EventType(enum.StrEnum):
     METADATA_SKIPPED = "metadata_skipped"
     METADATA_UPDATED = "metadata_updated"
     METADATA_VALUES = "metadata_values"
+    FRAMELOG_ROLLS = "framelog_rolls"
+    FRAMELOG_ROLL = "framelog_roll"
     EDIT_RECORDED = "edit_recorded"
     NEGATIVE_DELETED = "negative_deleted"
     REGION_RENDERED = "region_rendered"
@@ -136,6 +138,14 @@ class Code(enum.StrEnum):
     NEGATIVE_NOT_FOUND = "NEGATIVE_NOT_FOUND"
     INVALID_EDIT = "INVALID_EDIT"
     INVALID_METADATA = "INVALID_METADATA"
+    FRAMELOG_NO_TOKEN = "FRAMELOG_NO_TOKEN"
+    FRAMELOG_UNAUTHORIZED = "FRAMELOG_UNAUTHORIZED"
+    FRAMELOG_NOT_FOUND = "FRAMELOG_NOT_FOUND"
+    FRAMELOG_RATE_LIMITED = "FRAMELOG_RATE_LIMITED"
+    FRAMELOG_UNREACHABLE = "FRAMELOG_UNREACHABLE"
+    REPLACE_TARGET_NOT_FOUND = "REPLACE_TARGET_NOT_FOUND"
+    REPLACE_REQUIRES_SINGLE_NEGATIVE = "REPLACE_REQUIRES_SINGLE_NEGATIVE"
+    FRAMELOG_BAD_RESPONSE = "FRAMELOG_BAD_RESPONSE"
     EXPORT_FAILED = "EXPORT_FAILED"
     # libjxl could not be reached through the process's symbol namespace. A
     # packaging failure, not a user error.
@@ -534,6 +544,28 @@ class MetadataValues(Event):
         if self.film_kinds is None:
             del data["film_kinds"]
         return data
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FramelogRolls(Event):
+    """`framelog rolls`' answer: the Frame log rolls, snake-cased."""
+
+    event_type: ClassVar[EventType] = EventType.FRAMELOG_ROLLS
+
+    rolls: list[dict[str, Any]]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class FramelogRoll(Event):
+    """`framelog roll`'s answer: one Frame log roll, its frames' display
+    fields, and the default alignment of the roll's sequenced negatives."""
+
+    event_type: ClassVar[EventType] = EventType.FRAMELOG_ROLL
+
+    roll: dict[str, Any]
+    frames: list[dict[str, Any]]
+    alignment: list[dict[str, Any]]
+    linked: bool
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
