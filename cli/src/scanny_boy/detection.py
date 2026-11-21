@@ -25,6 +25,16 @@ LUMINANCE_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
 LOW_PERCENTILE = 0.5
 HIGH_PERCENTILE = 99.5
 
+# `log_encode`'s floor, in linear units: 16 stops below 1.0, below any
+# signal a 14-bit raw carries, so it only stops log2 of zero.
+LOG_FLOOR = 2.0**-16
+# `log_encode`'s widest stretch, in stops below the high percentile. Real
+# 2x2 scans of dense negatives measured 2.5-7.5 stops between the two
+# percentiles; the cap only bites when clipped-to-zero pixels (or anything
+# else near `LOG_FLOOR`) fill the low percentile, which would otherwise
+# squeeze every real tone into the top sliver of the range.
+LOG_MAX_STOPS = 8.0
+
 
 @dataclasses.dataclass(frozen=True)
 class DetectionImage:
@@ -34,12 +44,20 @@ class DetectionImage:
 
 
 def build_detection_image(
-    frame: np.ndarray, *, long_edge: int, clahe: bool
+    frame: np.ndarray, *, long_edge: int, clahe: bool, log_encode: bool = False
 ) -> DetectionImage:
     """frame is uint16 (H, W, 3) as read from an intermediate TIFF.
 
     1. Decode to linear with `decode_to_linear`.
     2. Luminance: 0.2126 R + 0.7152 G + 0.0722 B.
+       If `log_encode`, take log2 of it (floored at `LOG_FLOOR`) after the
+       downscale, so the stretch below spreads stops, not linear signal,
+       over at most `LOG_MAX_STOPS`.
+       An uninverted negative's clear rebate is far brighter than any
+       picture content, so the linear stretch pins its high end to the
+       rebate and crushes a dense frame's picture into the bottom few
+       percent of the range, where AKAZE's absolute threshold finds
+       almost nothing. The stitch stage's last fallback uses this.
     3. Downscale with cv2.INTER_AREA so the long edge is `long_edge`,
        never upscaling; scale is the exact ratio used.
     4. Scale to 0..255 uint8 by the 0.5th and 99.5th percentiles, clipped.
@@ -67,8 +85,12 @@ def build_detection_image(
         (new_width, new_height),
         interpolation=cv2.INTER_AREA,
     )
+    if log_encode:
+        resized = np.log2(np.maximum(resized, LOG_FLOOR))
 
     low, high = np.percentile(resized, [LOW_PERCENTILE, HIGH_PERCENTILE])
+    if log_encode:
+        low = max(low, high - LOG_MAX_STOPS)
     clipped = np.clip(resized, low, high)
     if high > low:
         normalised = (clipped - low) / (high - low) * 255.0

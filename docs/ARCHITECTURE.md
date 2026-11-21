@@ -724,9 +724,25 @@ is not implemented.
 `USE_CLAHE` is `False`, so the first registration pass runs on the plain
 detection image. If that pass fails a negative with
 `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH`
-(`_CLAHE_RETRY_CODES`), `_solve_negative` retries **once** with
+(`_CLAHE_RETRY_CODES`), `_solve_negative` retries with
 `clahe=True` (`clipLimit=2.0`, `tileGridSize=(8,8)`), emitting the warning
-`STITCH_CLAHE_FALLBACK_USED`.
+`STITCH_CLAHE_FALLBACK_USED`. If that retry fails the same way, it retries
+**once more** with CLAHE on a **log-encoded** detection image
+(`build_detection_image(..., log_encode=True)`), emitting the warning again.
+
+Why the log pass exists: the detection image is the *uninverted* negative in
+linear light. The clear rebate is far brighter than any picture content, so
+the 0.5/99.5-percentile stretch pins its top to the rebate and crushes a
+dense negative's picture into the bottom few percent of the 8-bit range.
+AKAZE's detector threshold is absolute, so smooth, low-texture frames (long
+curved edges, sky, walls) then yield almost no keypoints and drop out of the
+pair graph; CLAHE on that crushed image amplifies grain as much as
+structure. Stretching log2 luminance instead spreads the picture's stops
+across the range (capped at `LOG_MAX_STOPS` so clipped-black pixels cannot
+swamp it). It is the last pass rather than the default because it flattens
+content that sits in the top stop or two, which the measured gate-C
+constants were not taken against; running only after both other passes
+failed, it cannot change a negative they already stitch.
 
 Two details that matter if you touch this:
 
@@ -736,8 +752,12 @@ Two details that matter if you touch this:
 - `STITCH_OUTPUT_TOO_LARGE` and `INSUFFICIENT_MEMORY` are deliberately **not**
   retryable: a sharper detection image does not shrink a canvas.
 
-Recorded per negative as `used_clahe_fallback`; the roll-level policy is
-recorded as `clahe_fallback_enabled` in `stitch_params`.
+Recorded per negative as `used_clahe_fallback` (true for either fallback
+pass); the roll-level policy is recorded as `clahe_fallback_enabled` and
+`clahe_fallback_passes` (`["linear", "log"]`) in `stitch_params`. The latter
+is a non-invariant key (`ROLL_PROFILE_STITCH_PARAMS_KEYS`), refreshed by
+every run, so rolls stitched before the log pass existed still accept new
+scans.
 
 ### 8.3 Photometric gain compensation (the newest feature)
 

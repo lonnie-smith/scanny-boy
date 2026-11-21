@@ -318,6 +318,12 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         # belongs beside `use_clahe` here; which negatives actually needed it
         # is recorded per-negative as `used_clahe_fallback`, not here).
         "clahe_fallback_enabled": not USE_CLAHE,
+        # The detection images the fallback tries, in order, after the plain
+        # pass. A non-invariant entry (`ROLL_PROFILE_STITCH_PARAMS_KEYS`):
+        # it only decides how a negative that would otherwise fail is
+        # retried, so it is refreshed by every run rather than failing a
+        # roll stitched before the log pass existed.
+        "clahe_fallback_passes": ["linear", "log"],
         "detector": DETECTOR,
         "ratio_test": RATIO_TEST,
         "ransac_reproj_px": RANSAC_REPROJ_PX,
@@ -547,7 +553,12 @@ def _film_kind_from_manifest(roll: RollManifest) -> FilmKind:
 
 
 def _detect_all(
-    paths: list[Path], workers: int, cancel: CancellationToken, *, use_clahe: bool
+    paths: list[Path],
+    workers: int,
+    cancel: CancellationToken,
+    *,
+    use_clahe: bool,
+    log_encode: bool = False,
 ) -> list[registration.FrameFeatures]:
     """Build every frame's detection image and detect its features.
 
@@ -560,7 +571,10 @@ def _detect_all(
         cancel.raise_if_cancelled()
         pixels = _read_intermediate(path)
         detection = build_detection_image(
-            pixels, long_edge=DETECTION_LONG_EDGE, clahe=use_clahe
+            pixels,
+            long_edge=DETECTION_LONG_EDGE,
+            clahe=use_clahe,
+            log_encode=log_encode,
         )
         del pixels
         return detect_features(detection, name=path.name)
@@ -597,35 +611,45 @@ def _solve_negative(
     on_warning,
     profile=None,
 ) -> tuple[Layout, tuple[int, int], dict | None]:
-    """Detection, registration, and the global solve for one negative,
-    retried once with CLAHE if the plain pass leaves the pair graph
-    disconnected or too far off (`_CLAHE_RETRY_CODES`). Raises `StitchError`
-    for anything that still fails after that.
+    """Detection, registration, and the global solve for one negative.
+
+    A plain pass first. If it leaves the pair graph disconnected or too far
+    off (`_CLAHE_RETRY_CODES`), retry with CLAHE; if that fails the same
+    way, retry once more with CLAHE on a log-encoded detection image (see
+    `build_detection_image`). The log pass rescues dense negatives whose
+    low-texture frames give the linear image almost no features — a pass
+    that only runs once both others have failed, so it can change no
+    negative the first two already stitch. Raises `StitchError` for
+    anything that still fails after that.
 
     Every progress step this negative is budgeted for
     (`_STEPS_PER_FRAME`/`_STEPS_PER_NEGATIVE`) is spent on the first attempt;
     a retry solves again silently, with no further `Progress` events, so a
-    negative needing it does not overrun the run's declared step total.
+    negative needing one does not overrun the run's declared step total.
     """
     group = entry.group
     paths = _intermediate_paths(work_dir, group)
     frame_size = _read_intermediate_size(paths[0])
 
-    try:
+    def attempt(*, use_clahe: bool, log_encode: bool, budgeted: bool):
         return _attempt_solve(
             group,
             entry,
             paths,
             frame_size,
             grid=grid,
-            use_clahe=USE_CLAHE,
+            use_clahe=use_clahe,
+            log_encode=log_encode,
             workers=workers,
             cancel=cancel,
-            progress=progress,
+            progress=progress if budgeted else None,
             source_index=source_index,
             on_warning=on_warning,
             profile=profile,
         )
+
+    try:
+        return attempt(use_clahe=USE_CLAHE, log_encode=False, budgeted=True)
     except StitchError as exc:
         if exc.code not in _CLAHE_RETRY_CODES or USE_CLAHE:
             raise
@@ -635,20 +659,17 @@ def _solve_negative(
             f"{group.group_id}: {exc.code.value} on the first pass; retrying "
             f"registration with CLAHE contrast enhancement",
         )
-        return _attempt_solve(
-            group,
-            entry,
-            paths,
-            frame_size,
-            grid=grid,
-            use_clahe=True,
-            workers=workers,
-            cancel=cancel,
-            progress=None,
-            source_index=source_index,
-            on_warning=on_warning,
-            profile=profile,
+    try:
+        return attempt(use_clahe=True, log_encode=False, budgeted=False)
+    except StitchError as exc:
+        if exc.code not in _CLAHE_RETRY_CODES:
+            raise
+        on_warning(
+            Code.STITCH_CLAHE_FALLBACK_USED,
+            f"{group.group_id}: {exc.code.value} with CLAHE too; retrying "
+            f"registration with CLAHE on a log-encoded detection image",
         )
+    return attempt(use_clahe=True, log_encode=True, budgeted=False)
 
 
 def _attempt_solve(
@@ -659,6 +680,7 @@ def _attempt_solve(
     *,
     grid: GridSpec | None,
     use_clahe: bool,
+    log_encode: bool = False,
     workers: int,
     cancel: CancellationToken,
     progress: _StitchProgress | None,
@@ -667,7 +689,7 @@ def _attempt_solve(
     profile=None,
 ) -> tuple[Layout, tuple[int, int], dict | None]:
     """One pass of detection, registration, and the global solve, at a fixed
-    `use_clahe`. Raises `StitchError` for anything that fails the negative.
+    `use_clahe` and `log_encode`. Raises `StitchError` for anything that fails the negative.
 
     Writes the pairs it computes onto `entry` before any gate can raise, so
     a negative that fails still records its per-pair metrics: those
@@ -697,7 +719,9 @@ def _attempt_solve(
         if ca is not None and ca.get("mode") == "maps":
             ca_maps = ca
 
-    features = _detect_all(paths, workers, cancel, use_clahe=use_clahe)
+    features = _detect_all(
+        paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+    )
     if progress is not None:
         for _ in paths:
             progress.advance(source_index, PipelineStep.DETECT)
