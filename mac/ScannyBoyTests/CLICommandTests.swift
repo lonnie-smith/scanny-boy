@@ -932,4 +932,40 @@ struct CLICommandTests {
                 ]
         )
     }
+
+    // MARK: - Export mode and format
+
+    @Test("export adds --mode and --format only when they differ from the defaults")
+    func exportModeAndFormatArguments() {
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, mode: .positive, format: .jpegXL)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                ]
+        )
+        #expect(
+            CLICommand.export(roll: Self.roll, output: Self.out, mode: .negative)
+                .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--mode", "negative",
+                ]
+        )
+        #expect(
+            CLICommand.export(
+                roll: Self.roll, output: Self.out, downsample: 6048, mode: .negative, format: .tiff
+            )
+            .arguments
+                == [
+                    "export", "--roll", "/Volumes/Scans/roll-12",
+                    "--output", "/Volumes/Scans/roll-12-tif",
+                    "--downsample", "6048",
+                    "--mode", "negative",
+                    "--format", "tiff",
+                ]
+        )
+    }
 }

@@ -1907,6 +1907,65 @@ def decode_normalized(codes: np.ndarray) -> np.ndarray:
     )
 
 
+def linear_tables(
+    floors: tuple[float, ...] | list[float], ceils: tuple[float, ...] | list[float]
+) -> np.ndarray:
+    """Per-channel `(C, 65536)` float32 tables taking a published code
+    back to the **linear light** the stitch measured before it normalized:
+    the exact inverse of `encode_normalized(normalize_log_image(
+    to_log_density(linear), bounds))`, up to the encode's quantization and
+    headroom clip:
+
+        linear = 10 ** (floor + decode_normalized(code) * (ceil - floor))
+
+    This undoes the per-channel orange-mask stretch — which is the point:
+    the "stitched negative" export wants the scan as the camera saw it,
+    for inversion elsewhere. Values beyond the headroom rails were clipped
+    at publish time and stay clipped. A thin-end value can land above 1.0
+    (the fill sentinel always does); callers clip."""
+    floors_arr = np.asarray(floors, dtype=np.float64)
+    ceils_arr = np.asarray(ceils, dtype=np.float64)
+    if floors_arr.shape != ceils_arr.shape or floors_arr.ndim != 1:
+        raise ValueError(
+            f"floors and ceils must be matching 1-D sequences; got "
+            f"{floors_arr.shape} and {ceils_arr.shape}"
+        )
+    values = decode_normalized(np.arange(65536, dtype=np.uint16)).astype(np.float64)
+    log = (
+        floors_arr[:, np.newaxis]
+        + values[np.newaxis, :] * (ceils_arr - floors_arr)[:, np.newaxis]
+    )
+    return np.power(10.0, log).astype(np.float32)
+
+
+def denormalize_to_linear(
+    codes: np.ndarray,
+    floors: tuple[float, ...] | list[float],
+    ceils: tuple[float, ...] | list[float],
+) -> np.ndarray:
+    """Published uint16 codes, `(H, W)` or `(H, W, C)`, back to linear
+    light (float32, same shape) through `linear_tables` — a per-channel
+    gather, so a full-resolution frame never holds a float64 copy."""
+    if codes.dtype != np.uint16:
+        raise ValueError(f"denormalize_to_linear needs uint16 codes; got {codes.dtype}")
+    tables = linear_tables(floors, ceils)
+    if codes.ndim == 2:
+        if tables.shape[0] != 1:
+            raise ValueError(
+                f"a single-channel image needs one bound; got {tables.shape[0]}"
+            )
+        return tables[0][codes]
+    channels = codes.shape[-1]
+    if tables.shape[0] != channels:
+        raise ValueError(
+            f"{channels}-channel image needs {channels} bounds; got {tables.shape[0]}"
+        )
+    out = np.empty(codes.shape, dtype=np.float32)
+    for ch in range(channels):
+        out[..., ch] = tables[ch][codes[..., ch]]
+    return out
+
+
 def build_params() -> dict:
     """Every constant of the feature plus a `format_version`, folded into
     `processing_params` under the key `normalize` — a roll invariant. A

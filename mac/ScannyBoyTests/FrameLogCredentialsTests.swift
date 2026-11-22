@@ -107,9 +107,9 @@ struct FrameLogCredentialsTests {
         let executable = try TestSupport.writeTestExecutable(
             #"""
             if [ "$SCANNY_BOY_FRAMELOG_TOKEN" = "\#(Self.token)" ]; then
-              echo '{"protocol_version":30,"event":"framelog_rolls","rolls":[{"uid":"abcde12345","roll_number":1},{"uid":"fghij67890","roll_number":2}]}'
+              echo '{"protocol_version":31,"event":"framelog_rolls","rolls":[{"uid":"abcde12345","roll_number":1},{"uid":"fghij67890","roll_number":2}]}'
             fi
-            echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
             """#,
             in: directory
         )
@@ -128,8 +128,8 @@ struct FrameLogCredentialsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             #"""
-            echo '{"protocol_version":30,"event":"error","code":"FRAMELOG_UNAUTHORIZED","message":"bad token"}'
-            echo '{"protocol_version":30,"event":"finished","status":"failed","exit_status":1}'
+            echo '{"protocol_version":31,"event":"error","code":"FRAMELOG_UNAUTHORIZED","message":"bad token"}'
+            echo '{"protocol_version":31,"event":"finished","status":"failed","exit_status":1}'
             """#,
             in: directory
         )

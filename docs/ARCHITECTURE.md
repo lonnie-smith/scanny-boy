@@ -95,8 +95,11 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **25** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 25 adds user-guided development-band
+`PROTOCOL_VERSION` is **31** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 31 adds `--mode positive|negative` and
+`--format jxl|tiff` to `export` (the stitched-negative export and TIFF
+output; §14); 30 adds `stitch --replaces` / `--sequence-as` (an in-place
+re-scan); 26–29 are listed in `CLIEvent.swift`'s version history; 25 adds user-guided development-band
 removal — `edit deband`, the per-negative `deband` block in `roll info` and
 `edit_recorded`, and the `DEBAND_REFIT_FAILED` warning (see
 `docs/DEBAND_PLAN.md`); 24 replaces the CMY sliders and
@@ -196,6 +199,7 @@ edit render-region  --roll DIR --negative ID --x PX --y PX --width PX --height P
                     --output PATH [--mode positive|negative]
 edit render-preview --roll DIR --negative ID --output PATH [--mode positive|negative]
 export      --roll DIR --output DIR [--negatives ID ...] [--downsample none|6048|9072|12096]
+            [--mode positive|negative] [--format jxl|tiff]
 flatfield create --reference FILE --name NAME [--calibration FILE ...]
 flatfield list
 flatfield delete --profile ID
@@ -239,9 +243,10 @@ drops the negatives' records (their edits logs cascade away), unlinks their
 published TIFFs and previews, and renumbers the survivors. `export` is the
 moment edits become pixels: it
 replays each negative's ops log over the published TIFF, renders a positive
-in Adobe RGB, and writes a 16-bit lossless JPEG XL with Exif/XMP boxes into
-a separate output folder, never opening the roll's own files for writing
-(§14).
+in Adobe RGB, and writes a 16-bit lossless JPEG XL (or TIFF) with Exif/XMP
+metadata into a separate output folder, never opening the roll's own files
+for writing (§14). `--mode negative` writes the stitched negative instead:
+the normalization undone, not inverted, only geometry and crop applied.
 
 ---
 
@@ -305,10 +310,10 @@ to bottom.
 | `deband.py` | User-guided development-band removal: per-region fit of a chroma-only per-line correction, its replay, and the `deband` op's params (see [DEBAND_PLAN.md](DEBAND_PLAN.md)). |
 | `heal.py` | `HealParams`: the three heal ops (`scratches`, `deband`, `spots`) bundled as one value, their canonical replay order, and their pixel-cache key; previews and the exporter both replay through it. |
 | `auto_rotate.py` | The rebate-squaring angle estimator (stitch-time seeding) and the fine-rotation warp both preview and export replay. |
-| `render.py` | The shared positive render: decode normalized density, invert, tone/colour, camera-matrix + Adobe RGB encode; preview and export both drive it. |
+| `render.py` | The shared positive render: decode normalized density, invert, tone/colour, camera-matrix + Adobe RGB encode; preview and export both drive it. Also `render_negative_export`, the stitched-negative export's un-normalize + matrix + encode (no inversion). |
 | `resample.py` | The export's long-edge downscale. |
 | `previews.py` | Small lossless PNG previews of published TIFFs, under Application Support beside the database; rewritten whenever an edit changes the rendering. |
-| `exporter.py` | `export`: replay a negative's ops log over its published TIFF, render a positive in Adobe RGB (`render.py`), and write a 16-bit lossless JPEG XL with the export profile, Exif and XMP boxes (`export_metadata.py`, `jxl_writer.py`). |
+| `exporter.py` | `export`: replay a negative's ops log over its published TIFF, render a positive in Adobe RGB (`render.py`) — or, in negative mode, only the geometry and crop over the un-normalized scan — and write a 16-bit lossless JPEG XL or a 16-bit Deflate TIFF with the export profile, Exif and XMP (`export_metadata.py`, `jxl_writer.py`, `tiff_writer.py`). |
 
 **Stitching**
 | Module | Role |
@@ -1256,7 +1261,8 @@ RootView                    resolves the CLI helper once; shows why not if it ca
       ├─ EditStageView      filmstrip + preview; sidebar panels Geometry (rotate/flip/crop),
       │                     Tone, Color, Heal (spotting)
       ├─ MetadataStageView  roll + negative metadata (via `metadata set`), Apply
-      └─ ExportStageView    choose an output folder → one `export` invocation
+      └─ ExportStageView    output folder, image (positive / stitched negative),
+                            format (JPEG XL / TIFF), size → one `export` invocation
 
 sheets: NewRollSheet, RestitchSheet, FlatFieldProfilesSheet, GridProfilesSheet,
         FrameLogImportSheet (File > Import from Frame log… or the Metadata stage's
@@ -1280,7 +1286,7 @@ any in-flight export — one helper invocation at a time.
 | `ToneAdjustment`, `ColorAdjustment`, `NegativeSpots` | The Tone / Color / Heal panels' state and their op payloads. |
 | `PreviewCache`, `PreviewZoomModel` | Preview file layout under Application Support, and the 1:1 region fetch through `edit render-region`. |
 | `RunModel` | **One shared model** drives Run, re-stitch, *and* Apply — not three parallel mechanisms. |
-| `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. |
+| `ExportModel` | Export tab state. Drives its own CLI session rather than `RunModel`'s — `export` emits no `progress`, so the run-log machinery would be dead weight — collecting `export_done` per negative. Persists the downsample, mode and format choices. |
 | `FrameLogConnectionModel` | The Settings pane's Frame log section: base URL, token (Keychain; shown by prefix only) and a test connection through `framelog rolls`. The token reaches the CLI in `SCANNY_BOY_FRAMELOG_TOKEN`, never argv. |
 | `FrameLogImportModel` / `FrameLogAlignment` | The import sheet's state: `framelog rolls` → `framelog roll` → editable alignment → `framelog apply`, all one-shot. `FrameLogAlignment` is the pure pairing of negatives with frame numbers (strictly increasing, within `1...lastFrame`). The `metadata_updated` manifest from apply goes to `EditModel.adoptImportedManifest`, which lands it in memory like a `metadata set` result. See `docs/METADATA_IMPORT_PLAN.md` §6. |
 | `AppActivity` | The app-wide "one helper invocation at a time" busy flag every stage observes. |
@@ -1371,7 +1377,12 @@ handles it.
    the recorded tone op baked in), and writes a 16-bit lossless JPEG XL with
    the export ICC profile embedded and Exif/XMP boxes at encode time; the
    `scannyboy:provenance` XMP record makes the file interpretable without
-   the database.
+   the database. `--format tiff` writes the same pixels and metadata as a
+   16-bit Deflate TIFF. `--mode negative` is the escape hatch for
+   inverting elsewhere: it undoes the published TIFF's per-channel
+   normalization with the recorded bounds and writes the stitched scan
+   un-inverted, orange mask intact, with only geometry and crop applied.
+   Tones the publish encode's headroom clipped cannot be recovered.
 
 ---
 

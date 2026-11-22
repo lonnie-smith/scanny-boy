@@ -1222,6 +1222,22 @@ def test_roll_delete_missing_roll_reports_roll_not_found(capsys, tmp_path):
             ],
             id="export-bad-downsample",
         ),
+        pytest.param(
+            ["export", "--roll", "/tmp/roll", "--output", "/tmp/out", "--mode", "raw"],
+            id="export-bad-mode",
+        ),
+        pytest.param(
+            [
+                "export",
+                "--roll",
+                "/tmp/roll",
+                "--output",
+                "/tmp/out",
+                "--format",
+                "png",
+            ],
+            id="export-bad-format",
+        ),
     ],
 )
 def test_usage_errors_exit_2_with_a_clean_stdout(argv, capsys):
@@ -4041,6 +4057,80 @@ def test_export_downsample_flows_through_main(capsys, tmp_path):
     assert done["width"] == 4
     assert done["height"] == 3
     assert (output_dir / "_DSC0001.jxl").exists()
+
+
+def test_export_mode_and_format_choices_match_the_exporter():
+    """The parser spells the choices out literally (no exporter import at
+    parser build); this pins them to the exporter's own lists."""
+    from scanny_boy.cli import build_parser
+    from scanny_boy.exporter import FORMAT_CHOICES, MODE_CHOICES
+
+    parser = build_parser()
+    export = next(
+        action
+        for action in parser._subparsers._group_actions[0].choices["export"]._actions
+        if action.dest == "mode"
+    )
+    assert tuple(export.choices) == MODE_CHOICES
+    fmt = next(
+        action
+        for action in parser._subparsers._group_actions[0].choices["export"]._actions
+        if action.dest == "format"
+    )
+    assert tuple(fmt.choices) == FORMAT_CHOICES
+
+
+def test_export_mode_and_format_flow_through_main(capsys, tmp_path):
+    """`--mode negative --format tiff` reaches the exporter: the stitched
+    negative lands as `<stem>-negative.tif`."""
+    import tifffile
+
+    from scanny_boy.roll_manifest import append_run
+    from scanny_boy.roll_manifest_test import _negative, _run
+
+    roll_dir = make_roll_dir(tmp_path)
+    manifest = load_roll_manifest(roll_dir)
+    append_run(manifest, _run(run_id="stitch-run", short_id="stitch"))
+    manifest.negatives.append(
+        _negative(
+            negative_id="stitch-negative-01",
+            run_id="stitch-run",
+            status="completed",
+            sequence=1,
+            normalization={"floors": [-1.8], "ceils": [-0.3]},
+            output={
+                "name": "_DSC0001.tif",
+                "size": 0,
+                "sha256": "0" * 64,
+                "width": 4,
+                "height": 3,
+            },
+        )
+    )
+    write_roll_manifest(roll_dir, manifest)
+    tifffile.imwrite(roll_dir / "_DSC0001.tif", np.zeros((3, 4), dtype=np.uint16))
+    capsys.readouterr()
+
+    output_dir = tmp_path / "export"
+    status = main(
+        [
+            "export",
+            "--roll",
+            str(roll_dir),
+            "--output",
+            str(output_dir),
+            "--mode",
+            "negative",
+            "--format",
+            "tiff",
+        ]
+    )
+
+    assert status == 0
+    events, _err = _stdout_events(capsys)
+    done = next(e for e in events if e["event"] == "export_done")
+    assert done["output"] == "_DSC0001-negative.tif"
+    assert (output_dir / "_DSC0001-negative.tif").exists()
 
 
 def test_export_defaults_to_no_downsample(capsys, tmp_path):

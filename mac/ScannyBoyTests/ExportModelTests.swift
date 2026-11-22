@@ -111,5 +111,58 @@ struct ExportModelTests {
 
         let argv = try String(contentsOf: argvPath, encoding: .utf8)
         #expect(!argv.contains("--downsample"))
+        #expect(!argv.contains("--mode"))
+        #expect(!argv.contains("--format"))
+    }
+
+    @Test("Mode and format default to the finished positive as JPEG XL")
+    func modeAndFormatDefaults() {
+        let model = ExportModel(
+            runner: CLIRunner(executable: URL(filePath: "/bin/true")),
+            defaults: Self.isolatedDefaults()
+        )
+        #expect(model.mode == .positive)
+        #expect(model.format == .jpegXL)
+    }
+
+    @Test("Mode and format survive a relaunch")
+    func modeAndFormatArePersisted() {
+        let defaults = Self.isolatedDefaults()
+        let executable = URL(filePath: "/bin/true")
+
+        let first = ExportModel(runner: CLIRunner(executable: executable), defaults: defaults)
+        first.mode = .negative
+        first.format = .tiff
+
+        let second = ExportModel(runner: CLIRunner(executable: executable), defaults: defaults)
+        #expect(second.mode == .negative)
+        #expect(second.format == .tiff)
+    }
+
+    @Test("The chosen mode and format reach the export invocation")
+    func modeAndFormatReachTheCommand() async throws {
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let argvPath = directory.appending(path: "argv", directoryHint: .notDirectory)
+        let executable = try Self.fakeExportExecutable(argvPath: argvPath.path, in: directory)
+        let model = ExportModel(
+            runner: CLIRunner(executable: executable), defaults: Self.isolatedDefaults()
+        )
+        model.mode = .negative
+        model.format = .tiff
+
+        let roll = directory.appending(path: "roll", directoryHint: .isDirectory)
+        let output = directory.appending(path: "export", directoryHint: .isDirectory)
+        model.outputDirectory = output
+        model.export(roll: roll, output: output)
+        await model.waitForCompletion()
+
+        let argv = try String(contentsOf: argvPath, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let modeIndex = try #require(argv.firstIndex(of: "--mode"))
+        #expect(argv[modeIndex + 1] == "negative")
+        let formatIndex = try #require(argv.firstIndex(of: "--format"))
+        #expect(argv[formatIndex + 1] == "tiff")
     }
 }

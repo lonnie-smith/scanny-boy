@@ -467,3 +467,79 @@ def render_export(
         image, matrix, tone_params, color_params, metering, long_edge=long_edge
     )
     return np.rint(floats * MAX_CODE).astype(np.uint16), fractions
+
+
+def render_negative_export(
+    image: np.ndarray,
+    floors: tuple[float, ...] | list[float],
+    ceils: tuple[float, ...] | list[float],
+    matrix: np.ndarray | None,
+    long_edge: int | None = None,
+) -> tuple[np.ndarray, tuple[float, ...]]:
+    """The "stitched negative" export: one published TIFF's codes back to
+    the scan as the camera saw it — **not inverted, orange mask intact**,
+    no tone, colour, highlight lock or auto-neutral — encoded for another
+    program to invert.
+
+    The chain:
+
+        published codes -> linear light (`normalization.denormalize_to_linear`,
+        undoing the stitch's per-channel stretch with the negative's own
+        recorded `floors`/`ceils`)
+        -> 3x3 matrix (colour only: sensor RGB -> Adobe RGB)
+        -> clip to [0, 1]
+        -> Lanczos3 resize to `long_edge`, when asked (still linear)
+        -> ** (1 / GAMMA_ADOBE)
+        -> uint16
+
+    The module docstring's argument against undoing the normalization
+    before the matrix is about a *positive*: there the mask has to come
+    off per channel before any mixing. Here the mask is meant to stay, and
+    the matrix is simply the camera -> Adobe RGB conversion of what the
+    sensor recorded, so the file's embedded export profile tells the
+    truth. No exposure is changed: the film base sits wherever the capture
+    put it.
+
+    `image` is uint16 `(H, W)` (mono, `matrix` must be `None`) or
+    `(H, W, 3)` (`matrix` required). Returns `(uint16 pixels, clip
+    fractions)` — the fractions are the full-resolution [0, 1] clip.
+    """
+    if image.dtype != np.uint16:
+        raise ValueError(
+            f"render_negative_export needs uint16 codes; got dtype {image.dtype}"
+        )
+    image = _as_density_codes(image)
+    if image.ndim == 3:
+        if image.shape[2] != 3:
+            raise ValueError(
+                f"render_negative_export needs (H, W) or (H, W, 3); got {image.shape}"
+            )
+        if matrix is None:
+            raise ValueError(
+                "a colour image needs the camera colour matrix; a silent "
+                "identity fallback would mislabel the file as Adobe RGB"
+            )
+    elif matrix is not None:
+        raise ValueError(
+            "a mono (single-channel) image takes no colour matrix; pass None"
+        )
+
+    linear = normalization.denormalize_to_linear(image, floors, ceils)
+    if matrix is not None:
+        linear = linear @ np.asarray(matrix, dtype=np.float32).T
+    preclip = linear
+    linear = np.clip(preclip, 0.0, 1.0)
+    if linear.ndim == 2:
+        fractions: tuple[float, ...] = (
+            float(np.count_nonzero(preclip != linear)) / linear.size,
+        )
+    else:
+        fractions = _clipped_fractions(preclip, linear)
+    del preclip
+
+    size = resample.target_size(linear.shape[0], linear.shape[1], long_edge)
+    if size is not None:
+        linear = np.clip(resample.resize_lanczos3(linear, size[0], size[1]), 0.0, 1.0)
+
+    display = np.power(linear, 1.0 / GAMMA_ADOBE, dtype=np.float32)
+    return np.rint(display * MAX_CODE).astype(np.uint16), fractions

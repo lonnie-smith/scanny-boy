@@ -970,7 +970,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = subparsers.add_parser(
         "export",
-        help="Write TIFFs with each negative's edits applied into an output folder.",
+        help="Write each negative, edited positive or stitched negative, into an output folder.",
     )
     export.add_argument("--roll", required=True, metavar="DIR")
     export.add_argument("--output", required=True, metavar="DIR")
@@ -982,6 +982,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("none", "6048", "9072", "12096"),
         default="none",
         help="Reduce the export's long edge to the chosen size (no upscale).",
+    )
+    export.add_argument(
+        "--mode",
+        # `exporter.MODE_CHOICES` / `FORMAT_CHOICES`, literal for the same
+        # reason as `--downsample`'s choices.
+        choices=("positive", "negative"),
+        default="positive",
+        help=(
+            "positive: the finished positive with every edit applied. "
+            "negative: the stitched negative, not inverted and with the "
+            "orange mask intact, with only rotation, flip and crop applied."
+        ),
+    )
+    export.add_argument(
+        "--format",
+        choices=("jxl", "tiff"),
+        default="jxl",
+        help="Lossless 16-bit JPEG XL, or 16-bit Deflate TIFF.",
     )
 
     return parser
@@ -2589,6 +2607,8 @@ def _run_export_command(args, writer: EventWriter) -> int:
                 Path(args.output),
                 args.negatives,
                 downsample=parse_downsample(args.downsample),
+                mode=args.mode,
+                fmt=args.format,
                 emit=writer.write,
             )
     except RollBusyError as exc:

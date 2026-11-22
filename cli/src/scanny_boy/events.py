@@ -11,7 +11,7 @@ import enum
 import json
 from typing import IO, Any, ClassVar
 
-PROTOCOL_VERSION = 30
+PROTOCOL_VERSION = 31
 
 
 class EventType(enum.StrEnum):

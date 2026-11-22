@@ -744,20 +744,41 @@ public struct CLICommand: Sendable, Hashable {
         return CLICommand(arguments: arguments)
     }
 
+    /// What `export` writes: the finished positive with every edit
+    /// applied, or the stitched negative — not inverted, orange mask
+    /// intact, only rotation, flip and crop applied — for inversion in
+    /// another program. The raw value is the CLI's `--mode` choice.
+    public enum ExportMode: String, Sendable, Hashable, CaseIterable {
+        case positive
+        case negative
+    }
+
+    /// The file format `export` writes. The raw value is the CLI's
+    /// `--format` choice.
+    public enum ExportFormat: String, Sendable, Hashable, CaseIterable {
+        case jpegXL = "jxl"
+        case tiff
+    }
+
     /// `scanny-boy export --roll DIR --output DIR [--negatives ID ...]
-    /// [--downsample N]`
+    /// [--downsample N] [--mode positive|negative] [--format jxl|tiff]`
     ///
     /// Renders each negative's published pixels as a positive in Adobe
-    /// RGB — the recorded tone baked in — and writes it as a lossless JPEG
-    /// XL into the chosen folder; the roll's own files are never modified.
-    /// No selection means every negative. `downsample`, when set, is the
-    /// long edge to reduce each export to (the CLI never upscales an
-    /// image already smaller than it).
+    /// RGB — the recorded tone baked in — or, in `.negative` mode, as the
+    /// stitched negative with only its geometry and crop applied, and
+    /// writes it as a lossless JPEG XL (or a 16-bit TIFF) into the chosen
+    /// folder; the roll's own files are never modified. No selection means
+    /// every negative. `downsample`, when set, is the long edge to reduce
+    /// each export to (the CLI never upscales an image already smaller
+    /// than it). `--mode` and `--format` are only sent when they differ
+    /// from the CLI's defaults.
     public static func export(
         roll: URL,
         output: URL,
         negatives: [String] = [],
-        downsample: Int? = nil
+        downsample: Int? = nil,
+        mode: ExportMode = .positive,
+        format: ExportFormat = .jpegXL
     ) -> CLICommand {
         var arguments = ["export", "--roll", roll.path, "--output", output.path]
         if !negatives.isEmpty {
@@ -766,6 +787,12 @@ public struct CLICommand: Sendable, Hashable {
         }
         if let downsample {
             arguments.append(contentsOf: ["--downsample", String(downsample)])
+        }
+        if mode != .positive {
+            arguments.append(contentsOf: ["--mode", mode.rawValue])
+        }
+        if format != .jpegXL {
+            arguments.append(contentsOf: ["--format", format.rawValue])
         }
         return CLICommand(arguments: arguments)
     }

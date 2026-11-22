@@ -274,7 +274,7 @@ struct ConfigurationModelTests {
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
             fi
-            echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -308,8 +308,8 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":30,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
-            echo '{"protocol_version":30,"event":"finished","status":"failed","exit_status":1}'
+            echo '{"protocol_version":31,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":31,"event":"finished","status":"failed","exit_status":1}'
             """,
             in: directory
         )
@@ -333,7 +333,7 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -355,8 +355,8 @@ struct ConfigurationModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let executable = try TestSupport.writeTestExecutable(
             """
-            echo '{"protocol_version":30,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
-            echo '{"protocol_version":30,"event":"finished","status":"failed","exit_status":1}'
+            echo '{"protocol_version":31,"event":"error","code":"ROLL_NOT_FOUND","message":"nope"}'
+            echo '{"protocol_version":31,"event":"finished","status":"failed","exit_status":1}'
             """,
             in: directory
         )
@@ -388,10 +388,10 @@ struct ConfigurationModelTests {
             fi
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
-              echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
               exit 0
             fi
-            echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )
@@ -433,10 +433,10 @@ struct ConfigurationModelTests {
             fi
             if [ "$1" = "roll" ] && [ "$2" = "set-setup" ]; then
               echo "$@" >> '\(log.path)'
-              echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+              echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
               exit 0
             fi
-            echo '{"protocol_version":30,"event":"finished","status":"success","exit_status":0}'
+            echo '{"protocol_version":31,"event":"finished","status":"success","exit_status":0}'
             """,
             in: directory
         )

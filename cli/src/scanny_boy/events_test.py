@@ -310,7 +310,7 @@ def test_event_writer_line_is_valid_json_per_write():
 def test_protocol_version_is_current():
     """Pins the current wire protocol version; bump alongside
     CONTRACT.md whenever the protocol changes."""
-    assert PROTOCOL_VERSION == 30
+    assert PROTOCOL_VERSION == 31
 
 
 def test_metadata_values_film_kinds_only_serialised_when_present():

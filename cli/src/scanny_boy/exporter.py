@@ -37,22 +37,43 @@ interpretability record: the published TIFF's normalization block
 plus what the render actually did). A malformed metadata value now fails
 the negative outright — there is no second write left to downgrade, and
 the file was never written.
+
+Two choices shape each run (`--mode`, `--format`):
+
+- **mode** `positive` (the default) is everything above. Mode `negative`
+  is the "stitched negative": the published TIFF's per-channel
+  normalization undone with the negative's own recorded bounds
+  (`render.render_negative_export`), so the file holds the scan as the
+  camera saw it — **not inverted, orange mask intact** — with only the
+  geometry (flip, fine rotation, quarter turns) and the crop applied. No
+  tone, colour, highlight lock, auto-neutral, or heal repairs. It is
+  colour-managed exactly like a positive (camera -> Adobe RGB, the export
+  profile) so another program can invert it. Its file name carries a
+  `-negative` suffix so it never overwrites a positive export.
+- **format** `jxl` (the default) is the lossless JPEG XL above; `tiff` is
+  a 16-bit Deflate TIFF carrying the same ICC profile, Exif/GPS IFDs and
+  XMP packet (`_write_tiff_export`).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import datetime
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import tifffile
+import tifftools
 
-from scanny_boy import color, jxl_writer, previews, render, resample
+from scanny_boy import color, jxl_writer, previews, render, resample, tiff_writer
 from scanny_boy import heal as heal_ops
 from scanny_boy.auto_rotate import rotate_with_fill
 from scanny_boy.events import Code, ExportDone, WarningEvent
 from scanny_boy.export_metadata import (
+    XMP_DESCRIPTION,
+    add_metadata_tags,
     build_exif,
     build_xmp,
     export_metadata_for,
@@ -73,6 +94,36 @@ EmitFn = Any
 EXPORT_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy export"
 
 DOWNSAMPLE_CHOICES = ("none", "6048", "9072", "12096")
+
+MODE_POSITIVE = "positive"
+MODE_NEGATIVE = "negative"
+# `cli.py` spells these out literally (it must not import this module, and
+# so cv2, just to build the parser); `cli_test` pins the two lists equal.
+MODE_CHOICES = (MODE_POSITIVE, MODE_NEGATIVE)
+
+FORMAT_JXL = "jxl"
+FORMAT_TIFF = "tiff"
+FORMAT_CHOICES = (FORMAT_JXL, FORMAT_TIFF)
+
+TIFF_SUFFIX = ".tif"
+NEGATIVE_NAME_SUFFIX = "-negative"
+NEGATIVE_IMAGE_DESCRIPTION_SUFFIX = ": Scanny Boy stitched negative export"
+
+
+def export_filename(published_name: str, mode: str, fmt: str) -> str:
+    """The export's file name for one published TIFF: its stem, a
+    `-negative` suffix in negative mode (so a positive and a negative
+    export of the same frame can share a folder), and the format's
+    extension."""
+    if mode not in MODE_CHOICES:
+        raise ValueError(f"unknown export mode {mode!r}")
+    if fmt not in FORMAT_CHOICES:
+        raise ValueError(f"unknown export format {fmt!r}")
+    stem = Path(published_name).stem
+    if mode == MODE_NEGATIVE:
+        stem += NEGATIVE_NAME_SUFFIX
+    suffix = jxl_writer.JXL_SUFFIX if fmt == FORMAT_JXL else TIFF_SUFFIX
+    return stem + suffix
 
 
 def parse_downsample(value: str) -> int | None:
@@ -148,13 +199,20 @@ def applied_downsample(image: np.ndarray, long_edge: int | None) -> int | None:
     return None if size is None else long_edge
 
 
-def export_image_description(negative: NegativeRecord) -> str:
+def export_image_description(
+    negative: NegativeRecord, mode: str = MODE_POSITIVE
+) -> str:
     """The export's `ImageDescription`: the short human string. The
     interpretability record — the negative's `normalization` block —
     moved to the XMP's `scannyboy:provenance`, where it belongs: after
     the render the pixels are no longer the encoded thing that record
     describes."""
-    return f"{negative.negative_id}{EXPORT_IMAGE_DESCRIPTION_SUFFIX}"
+    suffix = (
+        NEGATIVE_IMAGE_DESCRIPTION_SUFFIX
+        if mode == MODE_NEGATIVE
+        else EXPORT_IMAGE_DESCRIPTION_SUFFIX
+    )
+    return f"{negative.negative_id}{suffix}"
 
 
 def camera_matrix_for(roll: RollManifest) -> np.ndarray | None:
@@ -179,6 +237,7 @@ def provenance_record(
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
     highlight_lock: dict | None = None,
+    fmt: str = FORMAT_JXL,
 ) -> dict[str, Any]:
     """The `scannyboy:provenance` payload: what makes an exported
     file interpretable without the database. The published TIFF's
@@ -219,18 +278,10 @@ def provenance_record(
             "fit_version": heal.deband.get("fit_version"),
             "regions": len(heal.deband["regions"]),
         }
-    cropped = None
-    if crop_params is not None:
-        cropped = {
-            "x": crop_params.get("x"),
-            "y": crop_params.get("y"),
-            "width": crop_params.get("w"),
-            "height": crop_params.get("h"),
-            "tilt_deg": crop_params.get("tilt_deg"),
-            "preset": crop_params.get("preset"),
-        }
     return {
         "kind": "scanny-boy export",
+        "mode": MODE_POSITIVE,
+        "format": fmt,
         "negative_id": negative.negative_id,
         # The published TIFF's encoding — the export no longer *is* this,
         # but the published file beside the export still is.
@@ -246,7 +297,7 @@ def provenance_record(
             "spots": repaired,
             "scratches": scratch_record,
             "deband": deband_record,
-            "crop": cropped,
+            "crop": _crop_record(crop_params),
             "downsample": (
                 None
                 if applied_downsample is None
@@ -257,6 +308,68 @@ def provenance_record(
             # what makes an exported file's dense-end colour interpretable
             # without the database, exactly like `tone`/`color` above.
             "highlight_lock": highlight_lock,
+        },
+    }
+
+
+def _crop_record(crop_params: dict | None) -> dict | None:
+    if crop_params is None:
+        return None
+    return {
+        "x": crop_params.get("x"),
+        "y": crop_params.get("y"),
+        "width": crop_params.get("w"),
+        "height": crop_params.get("h"),
+        "tilt_deg": crop_params.get("tilt_deg"),
+        "preset": crop_params.get("preset"),
+    }
+
+
+def negative_provenance_record(
+    negative: NegativeRecord,
+    matrix: np.ndarray | None,
+    profile_kind: ProfileKind,
+    clipped_fractions: tuple[float, ...],
+    geometry: tuple[int, bool, float],
+    crop_params: dict | None = None,
+    applied_downsample: int | None = None,
+    fmt: str = FORMAT_JXL,
+) -> dict[str, Any]:
+    """The `scannyboy:provenance` payload of a stitched-negative export.
+    Its `rendered` block says what was done — the normalization undone
+    with the recorded bounds (`denormalized`), the matrix, the profile,
+    the geometry, crop and downsample — and, by having no `tone`,
+    `color`, heal or `highlight_lock` entries, what was not."""
+    quarter_turns, flipped, fine_angle = geometry
+    normalization = negative.normalization or {}
+    return {
+        "kind": "scanny-boy export",
+        "mode": MODE_NEGATIVE,
+        "format": fmt,
+        "negative_id": negative.negative_id,
+        "normalization": negative.normalization,
+        "normalized_fill": negative.normalized_fill,
+        "rendered": {
+            "profile": profile_record(profile_kind),
+            "gamma": render.GAMMA_ADOBE,
+            "inverted": False,
+            "denormalized": {
+                "floors": list(normalization.get("floors") or []),
+                "ceils": list(normalization.get("ceils") or []),
+            },
+            "matrix": (None if matrix is None else np.asarray(matrix).tolist()),
+            "clip_fractions": list(clipped_fractions),
+            "geometry": {
+                "quarter_turns": quarter_turns,
+                "flipped": flipped,
+                "fine_angle_deg": fine_angle,
+            },
+            "crop": _crop_record(crop_params),
+            "downsample": (
+                None
+                if applied_downsample is None
+                else {"long_edge": applied_downsample}
+            ),
         },
     }
 
@@ -285,16 +398,23 @@ def run_export(
     negative_ids: list[str],
     *,
     downsample: int | None = None,
+    mode: str = MODE_POSITIVE,
+    fmt: str = FORMAT_JXL,
     emit: EmitFn,
 ) -> ExportOutcome:
     """Exports the roll's negatives (all of them, or the requested ids)
-    as rendered positives in JPEG XL. `downsample` is the long edge to
+    as rendered positives — or, with `mode="negative"`, as the stitched
+    negative (module docstring) — in JPEG XL or, with `fmt="tiff"`, TIFF. `downsample` is the long edge to
     reduce each export to (`None` keeps full resolution; an image already
     smaller than the target is skipped silently). Raises
     `ExportFailure` when the roll itself can't be read — including a
     colour roll predating the `camera_color` block (raised once
     before anything is written); one negative's problem is a warning plus
     a `failed` entry, and never stops the rest."""
+    if mode not in MODE_CHOICES:
+        raise ValueError(f"unknown export mode {mode!r}")
+    if fmt not in FORMAT_CHOICES:
+        raise ValueError(f"unknown export format {fmt!r}")
     if not repo.roll_registered(roll_dir):
         raise ExportFailure(
             Code.ROLL_NOT_FOUND,
@@ -358,7 +478,7 @@ def run_export(
     for negative in negatives:
         assert isinstance(negative, NegativeRecord)
         result = _export_negative(
-            roll_dir, output_dir, roll, negative, downsample, emit
+            roll_dir, output_dir, roll, negative, downsample, emit, mode, fmt
         )
         if result is None:
             failed.append(negative.negative_id)
@@ -384,6 +504,8 @@ def _export_negative(
     negative: NegativeRecord,
     downsample: int | None,
     emit: EmitFn,
+    mode: str = MODE_POSITIVE,
+    fmt: str = FORMAT_JXL,
 ) -> tuple[str, int, int] | None:
     if negative.output is None or negative.status != "completed":
         emit(
@@ -404,9 +526,16 @@ def _export_negative(
         )
         return None
 
+    destination = output_dir / export_filename(negative.output["name"], mode, fmt)
     try:
         image = tifffile.imread(tiff_path)
         state = repo.net_edit_state(roll_dir, negative.negative_id)
+        if mode == MODE_NEGATIVE:
+            rendered = _export_stitched_negative(
+                image, state, roll, negative, downsample, destination, fmt
+            )
+            height, width = rendered.shape[0], rendered.shape[1]
+            return destination.name, width, height
         (
             quarter_turns,
             flipped,
@@ -450,9 +579,6 @@ def _export_negative(
         profile_kind = export_profile_kind(
             1 if rendered.ndim == 2 else rendered.shape[2]
         )
-        destination = output_dir / Path(negative.output["name"]).with_suffix(
-            jxl_writer.JXL_SUFFIX
-        )
         _write_export(
             destination,
             rendered,
@@ -466,6 +592,7 @@ def _export_negative(
             heal,
             crop_params,
             applied,
+            fmt,
         )
     except jxl_writer.JxlEncoderUnavailable as exc:
         # A packaging failure, not a user error: stop the export
@@ -485,6 +612,64 @@ def _export_negative(
     return destination.name, width, height
 
 
+def _export_stitched_negative(
+    image: np.ndarray,
+    state: repo.EditState,
+    roll: RollManifest,
+    negative: NegativeRecord,
+    downsample: int | None,
+    destination: Path,
+    fmt: str,
+) -> np.ndarray:
+    """Negative mode's body: geometry and crop replayed on the published
+    codes (the same `apply_edits` the positive takes, so the frame and its
+    fill sentinel are identical), then the normalization undone and the
+    result encoded — no heal, tone, colour or metering. Returns the
+    written pixels."""
+    normalization = negative.normalization or {}
+    floors = normalization.get("floors")
+    ceils = normalization.get("ceils")
+    if not floors or not ceils:
+        raise ValueError(
+            f"{negative.negative_id}'s normalization record has no bounds; "
+            "re-stitch it to export the stitched negative"
+        )
+    crop_params = (
+        state.crop
+        if previews.crop_is_live(state.crop, (image.shape[0], image.shape[1]))
+        else None
+    )
+    geometry = (state.quarter_turns, state.flipped, state.fine_angle_deg)
+    rotated = apply_edits(image, *geometry, crop_params)
+    matrix = None if rotated.ndim == 2 else camera_matrix_for(roll)
+    applied = applied_downsample(rotated, downsample)
+    rendered, clipped_fractions = render.render_negative_export(
+        rotated, floors, ceils, matrix, long_edge=downsample
+    )
+    profile_kind = export_profile_kind(1 if rendered.ndim == 2 else rendered.shape[2])
+    provenance = negative_provenance_record(
+        negative,
+        matrix,
+        profile_kind,
+        clipped_fractions,
+        geometry,
+        crop_params,
+        applied,
+        fmt,
+    )
+    _write_file(
+        destination,
+        rendered,
+        profile_kind,
+        roll,
+        negative,
+        provenance,
+        fmt,
+        MODE_NEGATIVE,
+    )
+    return rendered
+
+
 def _write_export(
     destination: Path,
     rendered: np.ndarray,
@@ -498,6 +683,7 @@ def _write_export(
     heal: heal_ops.HealParams = heal_ops.NONE,
     crop_params: dict | None = None,
     applied_downsample: int | None = None,
+    fmt: str = FORMAT_JXL,
 ) -> None:
     """The single write: rendered pixels, the export ICC profile embedded,
     and the metadata boxes built at encode time. The `.tmp`-and-replace
@@ -508,12 +694,6 @@ def _write_export(
     metadata at all there is no Exif box. The XMP always goes,
     because the provenance record is not user-set metadata but the file's
     interpretability record."""
-    metadata = export_metadata_for(roll, negative)
-    exif = (
-        build_exif(metadata, export_image_description(negative))
-        if metadata.has_any
-        else None
-    )
     provenance = provenance_record(
         negative,
         matrix,
@@ -525,11 +705,79 @@ def _write_export(
         crop_params,
         applied_downsample,
         roll.highlight_lock,
+        fmt,
     )
-    jxl_writer.write_jxl(
+    _write_file(
         destination,
         rendered,
-        icc_profile=load_icc_profile(profile_kind),
-        exif=exif,
-        xmp=build_xmp(metadata, provenance),
+        profile_kind,
+        roll,
+        negative,
+        provenance,
+        fmt,
+        MODE_POSITIVE,
     )
+
+
+def _write_file(
+    destination: Path,
+    pixels: np.ndarray,
+    profile_kind: ProfileKind,
+    roll: RollManifest,
+    negative: NegativeRecord,
+    provenance: dict[str, Any],
+    fmt: str,
+    mode: str,
+) -> None:
+    """Encodes `pixels` in `fmt` with the metadata built at encode time —
+    the one place both modes and both formats meet the disk."""
+    metadata = export_metadata_for(roll, negative)
+    description = export_image_description(negative, mode)
+    xmp = build_xmp(metadata, provenance)
+    icc = load_icc_profile(profile_kind)
+    if fmt == FORMAT_TIFF:
+        _write_tiff_export(destination, pixels, icc, metadata, description, xmp)
+        return
+    exif = build_exif(metadata, description) if metadata.has_any else None
+    jxl_writer.write_jxl(destination, pixels, icc_profile=icc, exif=exif, xmp=xmp)
+
+
+def _write_tiff_export(
+    destination: Path,
+    pixels: np.ndarray,
+    icc_profile: bytes,
+    metadata: Any,
+    description: str,
+    xmp: bytes,
+) -> None:
+    """The TIFF export: `tiff_writer.write_base_tiff` (uint16, Deflate with
+    prediction, the ICC profile embedded) to a scratch file, then one
+    `tifftools` pass adding what `tifffile` cannot write — the nested
+    Exif and GPS IFDs (`export_metadata.add_metadata_tags`, the same tags
+    the JPEG XL's Exif box carries) and the XMP packet in tag 700 — to a
+    `.tmp` that replaces the destination only once it is whole."""
+    base = destination.with_name(destination.name + ".base.tmp")
+    tmp = destination.with_name(destination.name + ".tmp")
+    try:
+        tiff_writer.write_base_tiff(
+            base,
+            pixels,
+            tiff_writer.BaseTiffTags(
+                description=description,
+                software=tiff_writer.software_tag_value(),
+                conversion_time=datetime.datetime.now(datetime.UTC).astimezone(),
+                icc_profile=icc_profile,
+            ),
+        )
+        info = tifftools.read_tiff(str(base))
+        ifd0 = info["ifds"][0]
+        add_metadata_tags(ifd0, metadata, description)
+        ifd0["tags"][XMP_DESCRIPTION] = {
+            "data": xmp,
+            "datatype": tifftools.Datatype.BYTE,
+        }
+        tifftools.write_tiff(info, str(tmp), allowExisting=True)
+        os.replace(tmp, destination)
+    finally:
+        for scratch in (base, tmp):
+            scratch.unlink(missing_ok=True)

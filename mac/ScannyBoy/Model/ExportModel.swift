@@ -12,8 +12,8 @@ import Observation
 @MainActor
 @Observable
 final class ExportModel {
-    /// One `export_done` event: a negative was rendered as a positive in
-    /// Adobe RGB and written into the output folder as a lossless JPEG XL.
+    /// One `export_done` event: a negative was rendered (as a positive, or
+    /// as the stitched negative) and written into the output folder.
     struct ExportedNegative: Sendable, Hashable {
         let negativeID: String
         let output: String
@@ -47,6 +47,21 @@ final class ExportModel {
             }
         }
     }
+    /// Finished positive or stitched negative. Persisted like
+    /// `downsampleLongEdge`.
+    var mode: CLICommand.ExportMode {
+        didSet {
+            guard mode != oldValue else { return }
+            defaults.set(mode.rawValue, forKey: Self.modeKey)
+        }
+    }
+    /// JPEG XL or TIFF. Persisted like `downsampleLongEdge`.
+    var format: CLICommand.ExportFormat {
+        didSet {
+            guard format != oldValue else { return }
+            defaults.set(format.rawValue, forKey: Self.formatKey)
+        }
+    }
     /// Per `export_done`, in the order the CLI reported them.
     private(set) var exportedNegatives: [ExportedNegative] = []
     private(set) var warnings: [String] = []
@@ -64,6 +79,9 @@ final class ExportModel {
 
     /// The persisted downsampling choice.
     @ObservationIgnored static let downsampleLongEdgeKey = "exportDownsampleLongEdge"
+    /// The persisted mode and format choices.
+    @ObservationIgnored static let modeKey = "exportMode"
+    @ObservationIgnored static let formatKey = "exportFormat"
 
     init(runner: CLIRunner, defaults: UserDefaults = AppEnvironment.defaults) {
         self.runner = runner
@@ -71,6 +89,10 @@ final class ExportModel {
         self.downsampleLongEdge = defaults.object(forKey: Self.downsampleLongEdgeKey) == nil
             ? nil
             : defaults.integer(forKey: Self.downsampleLongEdgeKey)
+        self.mode = defaults.string(forKey: Self.modeKey)
+            .flatMap(CLICommand.ExportMode.init(rawValue:)) ?? .positive
+        self.format = defaults.string(forKey: Self.formatKey)
+            .flatMap(CLICommand.ExportFormat.init(rawValue:)) ?? .jpegXL
     }
 
     // MARK: - Derived state
@@ -117,10 +139,15 @@ final class ExportModel {
 
         exportGeneration += 1
         let generation = exportGeneration
+        let command = CLICommand.export(
+            roll: roll,
+            output: output,
+            downsample: downsampleLongEdge,
+            mode: mode,
+            format: format
+        )
         exportTask = Task { [weak self, runner] in
-            let session = runner.session(
-                for: .export(roll: roll, output: output, downsample: self?.downsampleLongEdge)
-            )
+            let session = runner.session(for: command)
             do {
                 for await outputLine in try await session.start() {
                     self?.apply(outputLine)

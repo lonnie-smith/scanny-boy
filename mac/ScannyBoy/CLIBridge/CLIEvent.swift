@@ -94,7 +94,12 @@ public struct CLIEvent: Sendable, Hashable {
     ///
     /// Protocol 30 adds `stitch --replaces` / `--sequence-as` (a tethered
     /// re-scan takes over an earlier negative's slot) and the REPLACE_* codes.
-    public static let supportedProtocolVersion = 30
+    ///
+    /// Protocol 31 adds `--mode positive|negative` and `--format jxl|tiff`
+    /// to `export`: the stitched-negative export (not inverted, orange mask
+    /// intact, only geometry and crop applied, named `<stem>-negative`) and
+    /// a 16-bit TIFF alternative to JPEG XL. No new events.
+    public static let supportedProtocolVersion = 31
 
     public let protocolVersion: Int
     public let kind: Kind
