@@ -372,7 +372,19 @@ def build_exif(metadata: ExportMetadata, image_description: str) -> bytes:
     tifffile.imwrite(buffer, [[0]], dtype=np.uint8)
     buffer.seek(0)
     info = tifftools.read_tiff(buffer)
-    ifd0 = info["ifds"][0]
+    add_metadata_tags(info["ifds"][0], metadata, image_description)
+    out = io.BytesIO()
+    tifftools.write_tiff(info, out)
+    return out.getvalue()
+
+
+def add_metadata_tags(
+    ifd0: dict, metadata: ExportMetadata, image_description: str
+) -> None:
+    """Sets `ImageDescription`, `Model`, and the nested EXIF and GPS IFDs
+    on a `tifftools` IFD0 in place — the shared body of `build_exif`'s
+    in-memory Exif box and a TIFF export's own IFD0. A field nobody set
+    writes nothing."""
     ifd0["tags"][270] = {
         "data": image_description,
         "datatype": tifftools.Datatype.ASCII,
@@ -395,6 +407,3 @@ def build_exif(metadata: ExportMetadata, image_description: str) -> bytes:
             "ifds": [[{"tags": gps_tags, "ifds": []}]],
             "datatype": tifftools.Datatype.LONG,
         }
-    out = io.BytesIO()
-    tifftools.write_tiff(info, out)
-    return out.getvalue()

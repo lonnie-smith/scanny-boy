@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **29**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **30**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -273,6 +273,7 @@ scanny-boy edit deband --roll DIR --negative ID
 
 scanny-boy export      --roll DIR --output DIR [--negatives ID ...]
                        [--downsample {none,6048,9072,12096}]
+                       [--mode {positive,negative}] [--format {jxl,tiff}]
 
 scanny-boy rig create --name NAME --calibration FILE [FILE ...]
 scanny-boy rig list
@@ -419,6 +420,31 @@ upscales: an image already at or below the target is skipped silently,
 and what was applied is recorded in the XMP's `scannyboy:provenance`
 `rendered.downsample` block. An image smaller than the target exports
 at full resolution; no warning, no error.
+
+`--mode` on `export` picks what is written. `positive` (the default) is
+the rendered positive described under `export` below. `negative` is the
+**stitched negative**: the published TIFF's per-channel normalization is
+undone with the negative's own recorded `normalization.floors`/`ceils`
+(`linear = 10 ** (floor + decode_normalized(code) * (ceil - floor))`),
+giving back the stitched, flat-fielded linear scan — **not inverted, the
+orange mask intact**. Only the geometric ops (flip, fine rotation, quarter
+turns) and a live crop are replayed; tone, colour, auto-neutral, the
+roll's highlight lock and the spot/scratch/deband repairs are not. The
+linear values are matrixed into Adobe RGB (colour) or left single-channel
+(mono), clipped to [0, 1], optionally downsampled, and gamma-encoded with
+the same export profile as a positive, so another program can invert the
+file. Exposure is not changed. Values the publish encode's headroom
+clipped stay clipped. The file is named `<stem>-negative.<ext>` so it
+never overwrites a positive export, and its provenance has `mode:
+"negative"`, `rendered.inverted: false` and a `rendered.denormalized`
+block with the bounds used. A negative whose record has no bounds fails
+with `EXPORT_FAILED`.
+
+`--format` on `export` picks the encoding: `jxl` (the default, 16-bit
+lossless JPEG XL) or `tiff` (16-bit, Adobe Deflate with horizontal
+prediction, `.tif`). A TIFF carries the same export ICC profile, the same
+`Model` tag and nested Exif and GPS IFDs as the JPEG XL's Exif box, and
+the same XMP packet (tag 700). Both modes take either format.
 
 `--rig` on `run`, `stitch`, `probe`, and `prepare` names a scanning-rig
 calibration profile built by `rig create` — geometry and chromatic
@@ -882,7 +908,8 @@ selection before removing anything.
 `export` renders each negative's published TIFF into a **positive in Adobe
 RGB (1998)-compatible colour — the negative's recorded tone op baked in —
 written as a 16-bit lossless JPEG XL** named after the negative (`.jxl`),
-into `--output`. The ops log's geometric ops are
+into `--output` (or, with `--mode negative` / `--format tiff`, the stitched
+negative and/or a TIFF; see above). The ops log's geometric ops are
 replayed over the published pixels exactly as before; the render then
 inverts, matrixes the colour into Adobe RGB via the roll's recorded
 `camera_color` matrix, and applies the tone curve — the same curve the

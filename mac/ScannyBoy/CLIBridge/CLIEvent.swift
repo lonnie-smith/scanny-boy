@@ -91,7 +91,11 @@ public struct CLIEvent: Sendable, Hashable {
     /// (`framelog rolls`, `framelog roll` and `framelog apply`, all
     /// one-shot, the token in `SCANNY_BOY_FRAMELOG_TOKEN`) and its
     /// `framelog_rolls` and `framelog_roll` events.
-    public static let supportedProtocolVersion = 29
+    /// Protocol 30 adds `--mode positive|negative` and `--format jxl|tiff`
+    /// to `export`: the stitched-negative export (not inverted, orange mask
+    /// intact, only geometry and crop applied, named `<stem>-negative`) and
+    /// a 16-bit TIFF alternative to JPEG XL. No new events.
+    public static let supportedProtocolVersion = 30
 
     public let protocolVersion: Int
     public let kind: Kind

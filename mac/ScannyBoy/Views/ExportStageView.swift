@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// The Export tab: choose an output folder, then write every negative as a
-/// rendered positive in Adobe RGB, written as a lossless JPEG XL (with the
-/// negative's recorded tone baked in). The roll's own files are never
-/// touched — the CLI replays each negative's ops log over its published
-/// pixels, renders, and writes the result into the chosen folder.
+/// rendered positive in Adobe RGB (with the negative's recorded edits baked
+/// in) or as the stitched negative (not inverted, orange mask intact, only
+/// rotation, flip and crop applied), as a lossless JPEG XL or a 16-bit
+/// TIFF. The roll's own files are never touched — the CLI replays each
+/// negative's ops log over its published pixels, renders, and writes the
+/// result into the chosen folder.
 struct ExportStageView: View {
     @Bindable var export: ExportModel
     let edit: EditModel
@@ -28,6 +30,20 @@ struct ExportStageView: View {
                 }
             }
 
+            Section("Image") {
+                Picker("Image", selection: $export.mode) {
+                    Text("Finished Positive (All Corrections)").tag(CLICommand.ExportMode.positive)
+                    Text("Stitched Negative (Crop Only)").tag(CLICommand.ExportMode.negative)
+                }
+                Text(modeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Format", selection: $export.format) {
+                    Text("JPEG XL (Lossless)").tag(CLICommand.ExportFormat.jpegXL)
+                    Text("TIFF (16-bit)").tag(CLICommand.ExportFormat.tiff)
+                }
+            }
+
             Section("Image Size") {
                 Picker("Downsampling", selection: $export.downsampleLongEdge) {
                     Text("Full Resolution").tag(Int?.none)
@@ -42,7 +58,7 @@ struct ExportStageView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 } else {
-                    Text("Full resolution is the default; a reduced size exports faster and writes a smaller JPEG XL.")
+                    Text("Full resolution is the default; a reduced size exports faster and writes a smaller file.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -50,10 +66,7 @@ struct ExportStageView: View {
 
             Section("Export") {
                 HStack {
-                    Text(
-                        "Writes each negative as a rendered positive in Adobe RGB, as a lossless JPEG XL. "
-                            + "The roll's own files are never modified."
-                    )
+                    Text(exportDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     Spacer()
@@ -94,6 +107,33 @@ struct ExportStageView: View {
         .disabled(activity.isBusy)
     }
 
+    private var formatName: String {
+        switch export.format {
+        case .jpegXL: "a lossless JPEG XL"
+        case .tiff: "a 16-bit TIFF"
+        }
+    }
+
+    private var modeDescription: String {
+        switch export.mode {
+        case .positive:
+            "The rendered positive with every edit applied: tone, colour, repairs and crop."
+        case .negative:
+            "The stitched scan as the camera saw it, for inverting in another program: "
+                + "not inverted, orange mask intact, no tone, colour or repairs. "
+                + "Only rotation, flip and crop are applied. Files are named “…-negative”."
+        }
+    }
+
+    private var exportDescription: String {
+        let what = switch export.mode {
+        case .positive: "a rendered positive"
+        case .negative: "the stitched negative"
+        }
+        return "Writes each negative as \(what) in Adobe RGB, as \(formatName). "
+            + "The roll's own files are never modified."
+    }
+
     private var canExport: Bool {
         guard edit.rollURL != nil, export.outputDirectory != nil else {
             return false
@@ -104,7 +144,7 @@ struct ExportStageView: View {
     private func chooseOutputFolder() {
         guard let directory = ContentView.pickFolder(
             startingAt: export.outputDirectory,
-            message: "Choose where the exported JPEG XLs are written.",
+            message: "Choose where the exported files are written.",
             canCreateDirectories: true
         ) else { return }
         export.outputDirectory = directory
