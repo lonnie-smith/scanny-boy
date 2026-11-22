@@ -4569,3 +4569,19 @@ def test_export_holds_the_publish_lock_shared_for_its_run(
     main(["export", "--roll", str(roll), "--output", str(output)])
     assert seen == {"publish_busy": True}
     assert not _lock_busy(exclusive_publish_lock, roll)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--replaces", "a", "--sequence-as", "/tmp/x.NEF"],
+        ["--replaces", "a", "--negatives", "b"],
+        ["--sequence-as", "/tmp/x.NEF", "--compose-only"],
+    ],
+)
+def test_a_rescan_flag_with_another_target_is_a_usage_error(capsys, extra):
+    status = main(["stitch", "--work", "/tmp/w", "--roll", "/tmp/r", *extra])
+    assert status == 2
+    events, err = _stdout_events(capsys)
+    assert events == []
+    assert "mutually exclusive" in err

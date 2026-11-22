@@ -81,7 +81,14 @@ actor ThumbnailLoader {
     /// `kCGImageSourceThumbnailMaxPixelSize` bounding the decode, is what
     /// keeps this from paying for the full frame just to draw a small one.
     func thumbnail(forStitchedTIFF url: URL, pointSize: CGSize, scale: CGFloat) async -> Thumbnail? {
-        await cachedThumbnail(url: url, pointSize: pointSize, scale: scale) { url, pointSize, scale in
+        // A re-scan publishes new pixels under the old name (TETHER_PLAN
+        // §4.5), so the file's modification date is part of the key.
+        let modified =
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+        return await cachedThumbnail(
+            url: url, pointSize: pointSize, scale: scale, keySuffix: "@\(modified)"
+        ) { url, pointSize, scale in
             Self.embeddedPreview(url: url, pointSize: pointSize, scale: scale)
         }
     }

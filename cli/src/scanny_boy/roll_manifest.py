@@ -162,6 +162,12 @@ class CaptureTime:
     # offset (`±HH:MM`). Older rows lack both keys and read back as None.
     logged_datetime_original: str | None = None
     logged_offset: str | None = None
+    # The time this negative ranks at in the roll's sequence when it is not
+    # its own first frame's: a re-scan that took over an earlier negative in
+    # place (`stitch --replaces`, `--sequence-as`) keeps that negative's slot.
+    # Same camera-clock terms as `source_datetime_original`. Older rows lack
+    # the key and read back as None.
+    sequence_datetime_original: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -736,8 +742,11 @@ ROLL_PROFILE_PROCESSING_PARAMS_KEYS = ("flat_field", "chromatic_aberration")
 # for the same reason. `"auto_crop"` is the auto-crop detector's constants:
 # it shapes an ops-log seed, never published pixels, so it is refreshed by
 # every run rather than held invariant (and a roll stitched before it
-# existed must not mismatch).
-ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry", "auto_crop")
+# existed must not mismatch). `"clahe_fallback_passes"` is the list of
+# fallback detection images a failing negative is retried with; it only
+# rescues negatives that would otherwise fail, so a roll stitched before the
+# log pass existed must not mismatch either.
+ROLL_PROFILE_STITCH_PARAMS_KEYS = ("geometry", "auto_crop", "clahe_fallback_passes")
 
 
 def _processing_params_for_invariant_check(params: dict[str, Any]) -> dict[str, Any]:

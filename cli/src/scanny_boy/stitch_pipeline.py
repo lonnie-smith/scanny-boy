@@ -21,6 +21,7 @@ import datetime
 import hashlib
 import json
 import math
+import os
 import shutil
 import sys
 from collections.abc import Callable, Sequence
@@ -55,6 +56,7 @@ from scanny_boy import layout as layout_module
 from scanny_boy.apply_metadata import ApplyMetadataFailure, rewrite_date_time_original
 from scanny_boy.auto_rotate import estimate_rotation
 from scanny_boy.cancellation import CancellationToken, CancelledError
+from scanny_boy.catalogue import read_capture_timestamp
 from scanny_boy.composite import (
     FILL_COLOR,
     GAIN_DRIFT_WARN,
@@ -215,6 +217,12 @@ class _SolvedNegative:
     frame_size: tuple[int, int] | None = None  # (height, width)
     ca_maps: dict | None = None  # profile CA object, "maps" mode only
     failure: tuple[Code, str] | None = None
+    # A re-scan's (`stitch --replaces`): the output name of the negative it
+    # takes over, which this one publishes under. The record keeps its own
+    # provisional `expected_output` until the publish transaction, so a
+    # pending or failed re-scan never claims -- and recovery cleanup never
+    # deletes -- the old negative's file.
+    takes_over_name: str | None = None
     # The rebate-squaring angle `auto_rotate.estimate_rotation` measured on
     # this negative's composite — set at publish when the negative is new
     # this run and auto-rotation is enabled. The op it seeds is appended
@@ -318,6 +326,12 @@ def _stitch_params(profile=None) -> dict[str, Any]:
         # belongs beside `use_clahe` here; which negatives actually needed it
         # is recorded per-negative as `used_clahe_fallback`, not here).
         "clahe_fallback_enabled": not USE_CLAHE,
+        # The detection images the fallback tries, in order, after the plain
+        # pass. A non-invariant entry (`ROLL_PROFILE_STITCH_PARAMS_KEYS`):
+        # it only decides how a negative that would otherwise fail is
+        # retried, so it is refreshed by every run rather than failing a
+        # roll stitched before the log pass existed.
+        "clahe_fallback_passes": ["linear", "log"],
         "detector": DETECTOR,
         "ratio_test": RATIO_TEST,
         "ransac_reproj_px": RANSAC_REPROJ_PX,
@@ -547,7 +561,12 @@ def _film_kind_from_manifest(roll: RollManifest) -> FilmKind:
 
 
 def _detect_all(
-    paths: list[Path], workers: int, cancel: CancellationToken, *, use_clahe: bool
+    paths: list[Path],
+    workers: int,
+    cancel: CancellationToken,
+    *,
+    use_clahe: bool,
+    log_encode: bool = False,
 ) -> list[registration.FrameFeatures]:
     """Build every frame's detection image and detect its features.
 
@@ -560,7 +579,10 @@ def _detect_all(
         cancel.raise_if_cancelled()
         pixels = _read_intermediate(path)
         detection = build_detection_image(
-            pixels, long_edge=DETECTION_LONG_EDGE, clahe=use_clahe
+            pixels,
+            long_edge=DETECTION_LONG_EDGE,
+            clahe=use_clahe,
+            log_encode=log_encode,
         )
         del pixels
         return detect_features(detection, name=path.name)
@@ -597,35 +619,45 @@ def _solve_negative(
     on_warning,
     profile=None,
 ) -> tuple[Layout, tuple[int, int], dict | None]:
-    """Detection, registration, and the global solve for one negative,
-    retried once with CLAHE if the plain pass leaves the pair graph
-    disconnected or too far off (`_CLAHE_RETRY_CODES`). Raises `StitchError`
-    for anything that still fails after that.
+    """Detection, registration, and the global solve for one negative.
+
+    A plain pass first. If it leaves the pair graph disconnected or too far
+    off (`_CLAHE_RETRY_CODES`), retry with CLAHE; if that fails the same
+    way, retry once more with CLAHE on a log-encoded detection image (see
+    `build_detection_image`). The log pass rescues dense negatives whose
+    low-texture frames give the linear image almost no features — a pass
+    that only runs once both others have failed, so it can change no
+    negative the first two already stitch. Raises `StitchError` for
+    anything that still fails after that.
 
     Every progress step this negative is budgeted for
     (`_STEPS_PER_FRAME`/`_STEPS_PER_NEGATIVE`) is spent on the first attempt;
     a retry solves again silently, with no further `Progress` events, so a
-    negative needing it does not overrun the run's declared step total.
+    negative needing one does not overrun the run's declared step total.
     """
     group = entry.group
     paths = _intermediate_paths(work_dir, group)
     frame_size = _read_intermediate_size(paths[0])
 
-    try:
+    def attempt(*, use_clahe: bool, log_encode: bool, budgeted: bool):
         return _attempt_solve(
             group,
             entry,
             paths,
             frame_size,
             grid=grid,
-            use_clahe=USE_CLAHE,
+            use_clahe=use_clahe,
+            log_encode=log_encode,
             workers=workers,
             cancel=cancel,
-            progress=progress,
+            progress=progress if budgeted else None,
             source_index=source_index,
             on_warning=on_warning,
             profile=profile,
         )
+
+    try:
+        return attempt(use_clahe=USE_CLAHE, log_encode=False, budgeted=True)
     except StitchError as exc:
         if exc.code not in _CLAHE_RETRY_CODES or USE_CLAHE:
             raise
@@ -635,20 +667,17 @@ def _solve_negative(
             f"{group.group_id}: {exc.code.value} on the first pass; retrying "
             f"registration with CLAHE contrast enhancement",
         )
-        return _attempt_solve(
-            group,
-            entry,
-            paths,
-            frame_size,
-            grid=grid,
-            use_clahe=True,
-            workers=workers,
-            cancel=cancel,
-            progress=None,
-            source_index=source_index,
-            on_warning=on_warning,
-            profile=profile,
+    try:
+        return attempt(use_clahe=True, log_encode=False, budgeted=False)
+    except StitchError as exc:
+        if exc.code not in _CLAHE_RETRY_CODES:
+            raise
+        on_warning(
+            Code.STITCH_CLAHE_FALLBACK_USED,
+            f"{group.group_id}: {exc.code.value} with CLAHE too; retrying "
+            f"registration with CLAHE on a log-encoded detection image",
         )
+    return attempt(use_clahe=True, log_encode=True, budgeted=False)
 
 
 def _attempt_solve(
@@ -659,6 +688,7 @@ def _attempt_solve(
     *,
     grid: GridSpec | None,
     use_clahe: bool,
+    log_encode: bool = False,
     workers: int,
     cancel: CancellationToken,
     progress: _StitchProgress | None,
@@ -667,7 +697,7 @@ def _attempt_solve(
     profile=None,
 ) -> tuple[Layout, tuple[int, int], dict | None]:
     """One pass of detection, registration, and the global solve, at a fixed
-    `use_clahe`. Raises `StitchError` for anything that fails the negative.
+    `use_clahe` and `log_encode`. Raises `StitchError` for anything that fails the negative.
 
     Writes the pairs it computes onto `entry` before any gate can raise, so
     a negative that fails still records its per-pair metrics: those
@@ -697,7 +727,9 @@ def _attempt_solve(
         if ca is not None and ca.get("mode") == "maps":
             ca_maps = ca
 
-    features = _detect_all(paths, workers, cancel, use_clahe=use_clahe)
+    features = _detect_all(
+        paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+    )
     if progress is not None:
         for _ in paths:
             progress.advance(source_index, PipelineStep.DETECT)
@@ -1899,6 +1931,8 @@ def run_stitch(
     auto_crop: bool = True,
     defer_roll_refresh: bool = False,
     publish_lock: Callable[[], AbstractContextManager[None]] | None = None,
+    replaces: str | None = None,
+    sequence_as: Path | None = None,
 ) -> StitchOutcome:
     """Read the Phase 1 manifest in `work_dir`, verify every intermediate,
     and publish one stitched TIFF per negative into `out_dir`.
@@ -1956,6 +1990,14 @@ def run_stitch(
     the release. It requires `defer_roll_refresh` and no `negatives`: a
     stitch that recomputes the highlight lock or re-stitches existing
     negatives needs the exclusive roll lock.
+
+    `replaces` and `sequence_as` make this a *re-scan* (docs/TETHER_PLAN.md
+    §4.5): the work folder must hold exactly one negative. With `replaces`
+    the new negative takes over that existing negative's slot when it
+    publishes -- see `_take_over_slot` -- and until then the old negative
+    is untouched. With `sequence_as` (a target that never reached the roll)
+    the new negative only ranks at that file's capture time. Both work in
+    either lock mode.
     """
     work_dir = Path(work_dir)
     out_dir = Path(out_dir)
@@ -1965,6 +2007,10 @@ def run_stitch(
         raise ValueError("a parallel commit must defer the roll refresh")
     if parallel and negatives:
         raise ValueError("a parallel commit cannot re-stitch named negatives")
+    if (replaces is not None or sequence_as is not None) and (
+        negatives or (replaces is not None and sequence_as is not None)
+    ):
+        raise ValueError("a re-scan names one target and re-stitches nothing")
 
     # `roll` below is a *working copy*, loaded once by `plan_rerun`, that
     # drives planning, naming, the clamp's reference bounds and the
@@ -2018,6 +2064,28 @@ def run_stitch(
             Code.WORK_MANIFEST_UNUSABLE,
             "the work manifest records no completed negatives to stitch",
         )
+    rescan_anchor: str | None = None
+    if replaces is not None or sequence_as is not None:
+        if len(work_manifest.groups) != 1:
+            raise StitchError(
+                Code.REPLACE_REQUIRES_SINGLE_NEGATIVE,
+                f"a re-scan must be one negative, but {work_dir} holds "
+                f"{len(work_manifest.groups)}",
+            )
+        if sequence_as is not None:
+            rescan_anchor = _file_rank_time(sequence_as)
+            if rescan_anchor is None:
+                # Never a refusal: an old frame the decoder rejected is the
+                # likeliest reason to re-scan at all. The re-scan publishes
+                # and ranks at its own capture time instead.
+                emit(
+                    WarningEvent(
+                        run_id=run_id,
+                        code=Code.MISSING_CAPTURE_TIME,
+                        message=f"{sequence_as} has no readable capture time; "
+                        "the re-scan is placed by its own capture time",
+                    )
+                )
 
     # 4. Every intermediate must be present and unchanged.
     for group in groups:
@@ -2206,6 +2274,20 @@ def run_stitch(
                     "none of the requested --negatives match a group in this work manifest",
                 )
 
+        # A re-scan's target is looked up here, against the working copy
+        # loaded inside the publish lock, so it is exactly what this
+        # publish will replace.
+        replace_target: NegativeRecord | None = None
+        if replaces is not None:
+            try:
+                replace_target = roll.negative(replaces)
+            except KeyError:
+                raise StitchError(
+                    Code.REPLACE_TARGET_NOT_FOUND,
+                    f"the roll has no negative {replaces!r} to replace",
+                ) from None
+            rescan_anchor = _negative_rank_time(roll, replace_target)
+
         run_record, records_by_group, removals_by_group, new_negative_ids = (
             _append_this_run(
                 roll,
@@ -2217,6 +2299,26 @@ def run_stitch(
                 emit=emit,
             )
         )
+        replace_names: dict[str, str] = {}
+        if replaces is not None or sequence_as is not None:
+            (group,) = groups
+            record = records_by_group[group.group_id]
+            if record.negative_id not in new_negative_ids:
+                raise StitchError(
+                    Code.WORK_MANIFEST_UNUSABLE,
+                    f"{record.negative_id} already holds this re-scan's frames; "
+                    "re-stitch it instead",
+                )
+            if rescan_anchor is not None:
+                record.capture_time.sequence_datetime_original = rescan_anchor
+            if replace_target is not None:
+                _carry_over_target(record, replace_target)
+                removals_by_group[group.group_id] = [replace_target]
+                replace_names[group.group_id] = (
+                    replace_target.output["name"]
+                    if replace_target.output is not None
+                    else replace_target.expected_output
+                )
 
         # §3.3: the camera comparison's second home. `roll set-base-frame`
         # compares only when the roll already has a `camera_color` block; a
@@ -2284,6 +2386,7 @@ def run_stitch(
                 record=record,
                 pairs=[],
                 covered_to_remove=removals_by_group.get(group.group_id, []),
+                takes_over_name=replace_names.get(group.group_id),
             )
             fingerprint = _compose_fingerprint(
                 work_manifest_sha256=work_manifest_sha256,
@@ -2826,6 +2929,64 @@ def _append_this_run(
     return run_record, records, removals, new_negative_ids
 
 
+def _file_rank_time(path: Path) -> str | None:
+    """A frame file's capture time in the roll's rank terms -- the same
+    `isoformat()` of DateTimeOriginal (plus sub-seconds) the publish records
+    as `source_datetime_original` -- or `None` when it has none."""
+    try:
+        stamp = read_capture_timestamp(Path(path))
+    except OSError:
+        return None
+    if stamp is None:
+        return None
+    when = stamp.when.replace(microsecond=round(stamp.subsec_fraction * 1_000_000))
+    return when.isoformat()
+
+
+def _negative_rank_time(roll: RollManifest, negative: NegativeRecord) -> str | None:
+    """The time `negative` ranks at in the roll's sequence: its own anchor
+    (it is itself a re-scan), else its first frame's recorded capture time,
+    else -- a negative that never published records none -- read off its
+    first member's source file."""
+    capture_time = negative.capture_time
+    recorded = (
+        capture_time.sequence_datetime_original or capture_time.source_datetime_original
+    )
+    if recorded is not None:
+        return recorded
+    for source in roll.sources:
+        if source.filename == negative.members[0]:
+            return _file_rank_time(Path(source.absolute_path))
+    return None
+
+
+def _prune_orphaned_sources(roll: RollManifest, members: list[str]) -> None:
+    """Drop the source records of a replaced negative's frames that no
+    remaining negative uses, so the roll no longer points at files the app
+    is about to move to the Trash. Runs inside the publish transaction, on
+    the fresh roll, after the replaced record is gone."""
+    in_use = {m for n in roll.negatives for m in n.members}
+    doomed = set(members) - in_use
+    roll.sources = [s for s in roll.sources if s.filename not in doomed]
+
+
+def _carry_over_target(record: NegativeRecord, target: NegativeRecord) -> None:
+    """What a re-scan keeps of the negative it replaces: the negative-level
+    metadata, the place and Frame log link, the date override and logged
+    time, and the applied capture time (so the new TIFF is re-stamped with
+    it at publish, `_maybe_reapply_metadata`). Never the edits ops log --
+    those ops were fitted to the old pixels and go with the old record."""
+    record.metadata = copy.deepcopy(target.metadata)
+    record.place = copy.deepcopy(target.place)
+    record.framelog_frame_uid = target.framelog_frame_uid
+    old = target.capture_time
+    record.capture_time.date_override = old.date_override
+    record.capture_time.logged_datetime_original = old.logged_datetime_original
+    record.capture_time.logged_offset = old.logged_offset
+    record.capture_time.applied_datetime_original = old.applied_datetime_original
+    record.capture_time.intended_datetime_original = old.intended_datetime_original
+
+
 def _friendly_failure_message(
     code: Code, negative_id: str, members: list[str], detail: str
 ) -> str:
@@ -2948,16 +3109,22 @@ def _remove_covered_negatives(
     covered: list[NegativeRecord],
     run_id: str,
     emit: EmitFn,
+    *,
+    keep_name: str | None = None,
 ) -> None:
     """The replacement rule's removal half: the covered negatives a publish
     did not adopt are dropped from the manifest outright, and their TIFFs
     are unlinked best-effort — a failed delete emits
     `ORPHAN_FILE_NOT_REMOVED` and never fails the run. Records go first and
     the manifest is written after, so a crash here leaves an orphan file
-    rather than a dangling record."""
+    rather than a dangling record.
+
+    `keep_name` is the name the publishing negative itself was just written
+    under: a re-scan takes over its target's file name, so that file is the
+    new TIFF now and is never unlinked."""
     for old in covered:
         roll.negatives.remove(old)
-        if old.output is None:
+        if old.output is None or old.output["name"] == keep_name:
             continue
         old_path = out_dir / old.output["name"]
         try:
@@ -3503,11 +3670,35 @@ def _publish_negative(
         # actually carries, which is exactly the value just read.
         # `intended_`, `applied_`, and `date_override` stay null — they are
         # the metadata stage's, not the stitch stage's.
+        #
+        # Two things survive the overwrite. A sequence anchor always does: it
+        # is a re-scan's slot in the roll, kept across a later re-stitch. A
+        # re-scan also keeps what it carried over from the negative it
+        # replaces (`_carry_over_target`).
         record.capture_time = CaptureTime(
-            source_datetime_original=exif.date_time_original.isoformat()
+            source_datetime_original=exif.date_time_original.isoformat(),
+            sequence_datetime_original=(
+                previous_capture_time.sequence_datetime_original
+            ),
         )
+        if entry.takes_over_name is not None:
+            record.capture_time.date_override = previous_capture_time.date_override
+            record.capture_time.logged_datetime_original = (
+                previous_capture_time.logged_datetime_original
+            )
+            record.capture_time.logged_offset = previous_capture_time.logged_offset
+            # Kept even when never applied: the slot's intended time is the
+            # same, and Apply must still stamp it. `_maybe_reapply_metadata`
+            # overrides it with the applied time when there is one.
+            record.capture_time.intended_datetime_original = (
+                previous_capture_time.intended_datetime_original
+            )
 
-        staged_path = staging_dir / record.expected_output
+        # A re-scan publishes under the name of the negative it takes over;
+        # the record adopts that name only with the publish transaction.
+        provisional_name = record.expected_output
+        published_name = entry.takes_over_name or provisional_name
+        staged_path = staging_dir / published_name
         write_stitched_tiff(
             staged_path,
             result.image,
@@ -3540,12 +3731,29 @@ def _publish_negative(
         # needed; the image stays for the tail.
         del result
 
-        dest = out_dir / record.expected_output
+        dest = out_dir / published_name
+        # A re-scan's publish overwrites the old negative's TIFF. Keep a hard
+        # link to the old file in the staging directory (same volume) until
+        # the transaction commits, so a rolled-back publish puts it back.
+        replaced_backup: Path | None = None
+        if entry.takes_over_name is not None and dest.exists():
+            replaced_backup = staging_dir / ".replaced-original"
+            try:
+                os.link(dest, replaced_backup)
+            except OSError:
+                # A volume without hard links (exFAT, FAT): copy instead.
+                shutil.copy2(dest, replaced_backup)
         staged_path.replace(dest)
-        size = dest.stat().st_size
-        digest = hashing.sha256_file(dest)
+        try:
+            size = dest.stat().st_size
+            digest = hashing.sha256_file(dest)
+        except BaseException:
+            if replaced_backup is not None:
+                os.replace(replaced_backup, dest)
+            raise
+        record.expected_output = published_name
         record.output = {
-            "name": record.expected_output,
+            "name": published_name,
             "size": size,
             "sha256": digest,
             "width": width,
@@ -3555,7 +3763,14 @@ def _publish_negative(
         _maybe_reapply_metadata(
             out_dir, roll, record, previous_capture_time, run_id, emit
         )
-        _remove_covered_negatives(out_dir, roll, entry.covered_to_remove, run_id, emit)
+        _remove_covered_negatives(
+            out_dir,
+            roll,
+            entry.covered_to_remove,
+            run_id,
+            emit,
+            keep_name=published_name,
+        )
         # REBATE_ANCHORING §3.2 rule 5: the roll's first negative published
         # against the film-base reference locks it, in the same manifest
         # write as the negative. This is the only lock write, and rule 7's
@@ -3570,24 +3785,57 @@ def _publish_negative(
         # the negative as failed in a separate write.
         expected_references = _reference_identity(roll)
         stamp = _now_iso()
+        replaced_members = (
+            [m for old in entry.covered_to_remove for m in old.members]
+            if entry.takes_over_name is not None
+            else []
+        )
+
+        def finish_publish(fresh: RollManifest) -> None:
+            if replaced_members:
+                _prune_orphaned_sources(fresh, replaced_members)
+            _lock_references(fresh, expected_references, stamp)
+
         try:
             committed, _ = _persist(
                 out_dir,
                 roll,
                 records=[record],
                 removed=[old.negative_id for old in entry.covered_to_remove],
-                finish=lambda fresh: _lock_references(
-                    fresh, expected_references, stamp
-                ),
+                finish=finish_publish,
             )
-        except StitchError:
+        except BaseException as exc:
             # The TIFF is in place, but the record that would own it never
             # committed. Leave no stray file behind for a negative that is
             # new this run; the failure record is written by the caller.
-            if is_new:
+            # Only a StitchError ever did this for an ordinary negative; a
+            # re-scan restores the old file whatever went wrong.
+            if not isinstance(exc, StitchError) and entry.takes_over_name is None:
+                raise
+            # A re-scan puts the old negative's file back and returns to its
+            # provisional name, so its failure record claims nothing the old
+            # negative still owns.
+            if replaced_backup is not None:
+                os.replace(replaced_backup, dest)
+            elif is_new:
                 dest.unlink(missing_ok=True)
+            if is_new:
                 record.output = None
+            if entry.takes_over_name is not None:
+                record.expected_output = provisional_name
+                roll.negatives.extend(
+                    old for old in entry.covered_to_remove if old not in roll.negatives
+                )
             raise
+        # A re-scan's replaced negative is gone from the roll now; its
+        # rendered preview goes too, best-effort, as `edit delete` does.
+        if entry.takes_over_name is not None:
+            for old in entry.covered_to_remove:
+                if old.preview_path:
+                    try:
+                        Path(old.preview_path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
         # Keep the working copy's lock stamps in step with the roll's.
         for name in ("film_base", "flat_field"):
             working_block = getattr(roll, name)

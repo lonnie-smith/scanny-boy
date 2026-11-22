@@ -524,7 +524,8 @@
         "applied_datetime_original",
         "date_override",
         "logged_datetime_original",
-        "logged_offset"
+        "logged_offset",
+        "sequence_datetime_original"
       ],
       "properties": {
         "source_datetime_original": { "type": ["string", "null"] },
@@ -540,6 +541,10 @@
           "type": ["string", "null"],
           "pattern": "^[+-]\\d{2}:\\d{2}$",
           "description": "The logged time's UTC offset; only meaningful with logged_datetime_original."
+        },
+        "sequence_datetime_original": {
+          "type": ["string", "null"],
+          "description": "When set, the negative ranks in the roll's sequence at this time instead of source_datetime_original: a re-scan that took over an earlier negative's slot."
         }
       }
     },

@@ -316,6 +316,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="solve and compose each negative into <work>/.composed/ for a "
         "later stitch to reuse; writes nothing to the roll",
     )
+    stitch.add_argument(
+        "--replaces",
+        metavar="NEGATIVE_ID",
+        help="a re-scan: the work folder's one negative takes over this "
+        "negative's slot and output name when it publishes",
+    )
+    stitch.add_argument(
+        "--sequence-as",
+        metavar="FILE",
+        dest="sequence_as",
+        help="a re-scan of a negative that never reached the roll: rank the "
+        "new negative at FILE's capture time",
+    )
     run = subparsers.add_parser(
         "run", help="Convert and stitch a selection of NEFs in one run."
     )
@@ -1174,6 +1187,8 @@ def _run_stitch_command(
                     auto_rotate=args.auto_rotate,
                     auto_crop=args.auto_crop,
                     defer_roll_refresh=args.defer_roll_refresh,
+                    replaces=args.replaces,
+                    sequence_as=(Path(args.sequence_as) if args.sequence_as else None),
                     publish_lock=(
                         (lambda: exclusive_publish_lock(Path(args.roll)))
                         if parallel_commit
@@ -2735,6 +2750,23 @@ def run_argv(
             "--compose-only and --negatives are mutually exclusive; a compose "
             "covers every completed negative in the work folder",
         )
+    if args.command == "stitch":
+        rescan_flags = [
+            flag
+            for flag, value in (
+                ("--replaces", args.replaces),
+                ("--sequence-as", args.sequence_as),
+                ("--negatives", args.negatives),
+                ("--compose-only", args.compose_only),
+            )
+            if value
+        ]
+        if len(rescan_flags) > 1 and (args.replaces or args.sequence_as):
+            return _usage_error(
+                parser,
+                f"{' and '.join(rescan_flags)} are mutually exclusive; a "
+                "re-scan names one target",
+            )
     if (
         args.command in ("prepare", "run")
         and grid_text is None

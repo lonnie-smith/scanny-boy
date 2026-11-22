@@ -95,10 +95,11 @@ source of truth for args and event shape, with
 `shared/contract/schema.json` as the authoritative JSON Schema for one event
 line.
 
-`PROTOCOL_VERSION` is **30** ([`events.py`](../cli/src/scanny_boy/events.py)).
-The recent versions, newest first: 30 adds `--mode positive|negative` and
+`PROTOCOL_VERSION` is **31** ([`events.py`](../cli/src/scanny_boy/events.py)).
+The recent versions, newest first: 31 adds `--mode positive|negative` and
 `--format jxl|tiff` to `export` (the stitched-negative export and TIFF
-output; §14); 26–29 are listed in `CLIEvent.swift`'s version history; 25 adds user-guided development-band
+output; §14); 30 adds `stitch --replaces` / `--sequence-as` (an in-place
+re-scan); 26–29 are listed in `CLIEvent.swift`'s version history; 25 adds user-guided development-band
 removal — `edit deband`, the per-negative `deband` block in `roll info` and
 `edit_recorded`, and the `DEBAND_REFIT_FAILED` warning (see
 `docs/DEBAND_PLAN.md`); 24 replaces the CMY sliders and
@@ -732,9 +733,25 @@ is not implemented.
 `USE_CLAHE` is `False`, so the first registration pass runs on the plain
 detection image. If that pass fails a negative with
 `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH`
-(`_CLAHE_RETRY_CODES`), `_solve_negative` retries **once** with
+(`_CLAHE_RETRY_CODES`), `_solve_negative` retries with
 `clahe=True` (`clipLimit=2.0`, `tileGridSize=(8,8)`), emitting the warning
-`STITCH_CLAHE_FALLBACK_USED`.
+`STITCH_CLAHE_FALLBACK_USED`. If that retry fails the same way, it retries
+**once more** with CLAHE on a **log-encoded** detection image
+(`build_detection_image(..., log_encode=True)`), emitting the warning again.
+
+Why the log pass exists: the detection image is the *uninverted* negative in
+linear light. The clear rebate is far brighter than any picture content, so
+the 0.5/99.5-percentile stretch pins its top to the rebate and crushes a
+dense negative's picture into the bottom few percent of the 8-bit range.
+AKAZE's detector threshold is absolute, so smooth, low-texture frames (long
+curved edges, sky, walls) then yield almost no keypoints and drop out of the
+pair graph; CLAHE on that crushed image amplifies grain as much as
+structure. Stretching log2 luminance instead spreads the picture's stops
+across the range (capped at `LOG_MAX_STOPS` so clipped-black pixels cannot
+swamp it). It is the last pass rather than the default because it flattens
+content that sits in the top stop or two, which the measured gate-C
+constants were not taken against; running only after both other passes
+failed, it cannot change a negative they already stitch.
 
 Two details that matter if you touch this:
 
@@ -744,8 +761,12 @@ Two details that matter if you touch this:
 - `STITCH_OUTPUT_TOO_LARGE` and `INSUFFICIENT_MEMORY` are deliberately **not**
   retryable: a sharper detection image does not shrink a canvas.
 
-Recorded per negative as `used_clahe_fallback`; the roll-level policy is
-recorded as `clahe_fallback_enabled` in `stitch_params`.
+Recorded per negative as `used_clahe_fallback` (true for either fallback
+pass); the roll-level policy is recorded as `clahe_fallback_enabled` and
+`clahe_fallback_passes` (`["linear", "log"]`) in `stitch_params`. The latter
+is a non-invariant key (`ROLL_PROFILE_STITCH_PARAMS_KEYS`), refreshed by
+every run, so rolls stitched before the log pass existed still accept new
+scans.
 
 ### 8.3 Photometric gain compensation (the newest feature)
 
@@ -972,6 +993,21 @@ registered.
   (`roll_sequence._sequenceable`); `pending` and `failed` negatives are
   unsequenced. Since replacement is in place (§9), a re-scan of the same
   frames keeps the position its capture time dictates.
+- A **sequence anchor** (`capture_time.sequence_datetime_original`) ranks a
+  negative at another time than its own first frame's — the only exception
+  to capture-time order. Only a tethered re-scan sets it: `stitch --replaces
+  ID` publishes a new negative (new frames, so new sources the subset test
+  never matches) that takes over the old one's slot in the same publish
+  transaction — the old record (and its ops log) is removed, the new TIFF is
+  published under the old output name, and the old negative-level metadata,
+  place, Frame log link, date override and logged time carry over; `stitch
+  --sequence-as FILE` only anchors, for a target that never reached the roll.
+  The re-scan stays pending under a provisional name of its own until it
+  publishes, so a failed re-scan leaves the old negative untouched and never
+  claims a name recovery cleanup could delete; a rolled-back publish restores
+  the old TIFF from a hard link kept in the staging directory. The anchor
+  survives a later re-stitch. `stitch_pipeline._carry_over_target` and the
+  `takes_over_name` path of `_publish_negative` are the whole mechanism.
 - `sequence` is recomputed on **every** roll write, inside the transaction,
   from the fresh roll (`roll_manifest.stamp_derived_state`, shared by
   `repo.mutate_roll` and `repo.insert_roll`); the committed manifest is the

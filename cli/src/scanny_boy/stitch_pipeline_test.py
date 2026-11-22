@@ -668,9 +668,11 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(
     clahe_by_call: list[bool] = []
     real_detect_all = stitch_pipeline._detect_all
 
-    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
         clahe_by_call.append(use_clahe)
-        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+        return real_detect_all(
+            paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+        )
 
     def fake_register_pair(a, b, undistorter=None):
         result = register_pair(a, b)
@@ -714,6 +716,97 @@ def test_clahe_fallback_recovers_an_underconstrained_negative(
     assert max(e.completed for e in progress_events) <= total
 
 
+def test_log_encoded_clahe_pass_runs_only_after_linear_clahe_fails(
+    work_dir, tmp_path, monkeypatch
+):
+    """A negative that fails both the plain pass and the linear-CLAHE retry
+    gets one last pass: CLAHE on a log-encoded detection image. That pass
+    is reached only after both others fail, so a negative they stitch is
+    never re-solved; a graph that connects on it still stitches."""
+    out_dir = make_roll_dir(tmp_path)
+
+    passes: list[tuple[bool, bool]] = []
+    real_detect_all = stitch_pipeline._detect_all
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
+        # Record the pass asked for, but detect on the plain image: the
+        # synthetic scene is a bright positive, which a log encoding
+        # flattens, and this test is about the retry order, not the
+        # encoding (detection_test.py covers that).
+        passes.append((use_clahe, log_encode))
+        return real_detect_all(paths, workers, cancel, use_clahe=False)
+
+    def fake_register_pair(a, b, undistorter=None):
+        result = register_pair(a, b)
+        if not passes[-1][1]:
+            # Only the log-encoded pass is allowed to connect the graph.
+            return dataclasses.replace(
+                result, accepted=False, reject_code=Code.STITCH_INSUFFICIENT_MATCHES
+            )
+        return result
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+
+    events: list = []
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "complete"
+    assert passes == [(False, False), (True, False), (True, True)]
+
+    fallback_warnings = [
+        e
+        for e in events
+        if isinstance(e, WarningEvent) and e.code is Code.STITCH_CLAHE_FALLBACK_USED
+    ]
+    assert len(fallback_warnings) == 2
+    assert "log-encoded" in fallback_warnings[1].message
+
+    roll = load_roll_manifest(out_dir)
+    negative = roll.negative("stitch-negative-01")
+    assert negative.status == "completed"
+    assert negative.used_clahe_fallback is True
+
+    progress_events = [e for e in events if isinstance(e, Progress)]
+    total = progress_events[0].total
+    assert max(e.completed for e in progress_events) <= total
+
+
+def test_negative_failing_every_pass_reports_the_last_failure(
+    work_dir, tmp_path, monkeypatch
+):
+    """When even the log-encoded pass cannot connect the graph, the negative
+    fails with a retry-eligible code after exactly three passes."""
+    out_dir = make_roll_dir(tmp_path)
+
+    passes: list[tuple[bool, bool]] = []
+    real_detect_all = stitch_pipeline._detect_all
+
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
+        passes.append((use_clahe, log_encode))
+        return real_detect_all(
+            paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+        )
+
+    def fake_register_pair(a, b, undistorter=None):
+        return dataclasses.replace(
+            register_pair(a, b),
+            accepted=False,
+            reject_code=Code.STITCH_INSUFFICIENT_MATCHES,
+        )
+
+    monkeypatch.setattr(stitch_pipeline, "_detect_all", fake_detect_all)
+    monkeypatch.setattr(stitch_pipeline, "register_pair", fake_register_pair)
+
+    events: list = []
+    outcome = run_stitch_with_defaults(work_dir, out_dir, events=events)
+
+    assert outcome.status == "partial"
+    assert passes == [(False, False), (True, False), (True, True)]
+    failures = [e for e in events if isinstance(e, NegativeFailed)]
+    assert failures[0].code is Code.STITCH_UNDERCONSTRAINED
+
+
 def test_clahe_fallback_is_not_used_for_an_oversized_canvas(
     work_dir, tmp_path, monkeypatch
 ):
@@ -725,9 +818,11 @@ def test_clahe_fallback_is_not_used_for_an_oversized_canvas(
     clahe_by_call: list[bool] = []
     real_detect_all = stitch_pipeline._detect_all
 
-    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
         clahe_by_call.append(use_clahe)
-        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+        return real_detect_all(
+            paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+        )
 
     def fake_check_output_size(canvas_size, *, on_warning):
         raise StitchError(Code.STITCH_OUTPUT_TOO_LARGE, "too large for this test")
@@ -1704,7 +1799,7 @@ def _grid_registration_fixtures(across: int, down: int):
     ground-truth geometry without paying for real registration."""
     placements = _grid_pair_placements(across, down)
 
-    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
         return [
             registration.FrameFeatures(
                 name=path.name,
@@ -3592,9 +3687,11 @@ def test_the_solve_assigns_only_the_record_fields_the_artifact_carries(
     clahe_by_call: list[bool] = []
     real_detect_all = stitch_pipeline._detect_all
 
-    def fake_detect_all(paths, workers, cancel, *, use_clahe):
+    def fake_detect_all(paths, workers, cancel, *, use_clahe, log_encode=False):
         clahe_by_call.append(use_clahe)
-        return real_detect_all(paths, workers, cancel, use_clahe=use_clahe)
+        return real_detect_all(
+            paths, workers, cancel, use_clahe=use_clahe, log_encode=log_encode
+        )
 
     def fake_register_pair(a, b, undistorter=None):
         result = register_pair(a, b)

@@ -239,6 +239,28 @@ struct CLICommandTests {
         #expect(!command.arguments.contains("--allow-partial"))
     }
 
+    @Test("stitch adds --replaces and --sequence-as only when asked")
+    func stitchReplaces() {
+        let command = CLICommand.stitch(
+            work: Self.work, roll: Self.out, deferRollRefresh: true,
+            replaces: "neg-7", sequenceAs: URL(fileURLWithPath: "/tmp/old.tif"),
+            composeOnly: true)
+        #expect(
+            command.arguments == [
+                "stitch", "--work", "/Volumes/Scans/roll-12-work",
+                "--roll", "/Volumes/Scans/roll-12-tif",
+                "--allow-partial",
+                "--defer-roll-refresh",
+                "--replaces", "neg-7",
+                "--sequence-as", "/tmp/old.tif",
+                "--compose-only",
+            ]
+        )
+        let plain = CLICommand.stitch(work: Self.work, roll: Self.out).arguments
+        #expect(!plain.contains("--replaces"))
+        #expect(!plain.contains("--sequence-as"))
+    }
+
     @Test("stitch adds --compose-only only when asked")
     func stitchComposeOnly() {
         let command = CLICommand.stitch(

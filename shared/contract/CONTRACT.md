@@ -4,7 +4,7 @@ The Swift app invokes the packaged `scanny-boy` binary as a subprocess. This
 document is the source of truth for that interface; update it whenever the
 CLI's args or output shape change, and update `schema.json` alongside it.
 
-`PROTOCOL_VERSION` (`events.py`, currently **30**) is the current
+`PROTOCOL_VERSION` (`events.py`, currently **31**) is the current
 event-stream version, and
 `manifest_format_version` (roll record) is currently 10. `schema.json` is the
 authoritative JSON Schema for one event line; `manifest.schema.json` and
@@ -227,7 +227,8 @@ scanny-boy prepare    --input DIR --files FILE [FILE ...] --out DIR
                       [--jobs N] [--overwrite] [--rig ID]
 
 scanny-boy stitch     --work DIR --roll DIR [--jobs N] [--overwrite] [--allow-partial]
-                      [--negatives ID ... | --compose-only] [--rig ID]
+                      [--negatives ID ... | --compose-only
+                       | --replaces ID | --sequence-as FILE] [--rig ID]
                       [--no-auto-rotate] [--no-auto-crop] [--defer-roll-refresh]
 
 scanny-boy run        --input DIR --files FILE [FILE ...] --roll DIR
@@ -363,6 +364,30 @@ artifact emits a `COMPOSE_ARTIFACT_STALE` warning and the stitch recomputes
 that group in full: an artifact only ever saves time, never changes a
 result. A stitch removes a group's artifact once the group is published or
 its failure recorded.
+
+**Re-scanning a negative in place** (`--replaces ID`, `--sequence-as FILE`).
+A tethered re-scan is a work folder holding exactly one negative (more is
+`REPLACE_REQUIRES_SINGLE_NEGATIVE`). With `--replaces ID` the new negative
+takes over the named negative's slot when it publishes: in the same publish
+transaction the old record is removed (its edits ops log with it), the new
+TIFF is published under the old record's output filename (its published name,
+or its expected one when it never published), and the new record carries the
+old one's negative-level metadata, place, Frame log link, date override and
+logged time. Its `capture_time.sequence_datetime_original` is set to the old
+negative's rank time, so it holds the old position in the roll's sequence,
+and when the old negative's capture time had been applied the new TIFF gets
+the same applied time. The new negative has a new `negative_id`, and like any
+new negative it is seeded with auto-rotation and auto-crop. Until it
+publishes it is pending under a provisional name of its own and the old
+negative is untouched, so a failed re-scan (`negative_failed`) leaves the old
+negative exactly as it was. An unknown `ID` is `REPLACE_TARGET_NOT_FOUND`.
+`--sequence-as FILE` is for a target that never reached the roll: the new
+negative ranks at FILE's `DateTimeOriginal` instead of its own; a FILE with no
+readable capture time is a `MISSING_CAPTURE_TIME` warning, and the new
+negative then ranks at its own. Both flags
+are mutually exclusive with each other and with `--negatives` and
+`--compose-only`, and both run as a parallel commit under
+`--defer-roll-refresh`.
 
 **Parallel commits and the locks.** Every command that writes a roll takes
 the roll lock exclusively, so only one runs at a time; `ROLL_BUSY` is the
@@ -1136,7 +1161,7 @@ staging directories, and reruns the incomplete negative.
 | `STITCH_GAIN_DRIFT` | Warning: a frame's solved photometric gain left `GAIN_DRIFT_WARN` from unity |
 | `STITCH_LAYOUT_UNEXPECTED` | Warning: solved layout is not strip-shaped (strips), or does not match the declared grid / is not a regular grid (grids) |
 | `STITCH_REBATE_CHECK_FAILED` | Warning: rebate edges not collinear, or not found |
-| `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH` |
+| `STITCH_CLAHE_FALLBACK_USED` | Warning: retrying registration with CLAHE after `STITCH_UNDERCONSTRAINED` or `STITCH_RESIDUAL_TOO_HIGH`; emitted a second time when that retry fails too and a last pass runs CLAHE on a log-encoded detection image |
 | `OUTPUT_DIMENSIONS_LARGE` | Warning: a canvas dimension exceeds 30,000 px |
 | `ROLL_NOT_FOUND` | `--roll` is not a registered roll, or a listed roll's folder is gone |
 | `ROLL_MANIFEST_UNSUPPORTED` | Roll record is not `manifest_format_version: 10` |
@@ -1153,6 +1178,8 @@ staging directories, and reruns the incomplete negative.
 | `FRAMELOG_NOT_FOUND` | The Frame log API answered 404 (no such roll) |
 | `FRAMELOG_RATE_LIMITED` | The Frame log API answered 429; the message names `Retry-After` when given |
 | `FRAMELOG_UNREACHABLE` | DNS, connection, TLS, or timeout failure reaching the Frame log API |
+| `REPLACE_TARGET_NOT_FOUND` | `stitch --replaces` named a `negative_id` the roll does not hold |
+| `REPLACE_REQUIRES_SINGLE_NEGATIVE` | `stitch --replaces` / `--sequence-as` was given a work folder with more than one negative |
 | `FRAMELOG_BAD_RESPONSE` | Any other HTTP status, a non-JSON body, a missing required field, or `apiVersion` other than 1 |
 | `INVALID_METADATA` | A `metadata` subcommand got an unknown field, a non-`YYYY-MM-DD` date, or a malformed payload |
 | `EXPORT_FAILED` | Writing one negative's export failed |
